@@ -1,0 +1,132 @@
+---
+title:
+  - Migrating
+  - From v0.1.x
+order: 100
+---
+
+## Component Syntax Revamp
+
+Component syntax has changed drastically, using proper function syntax instead of anonymous functions assigned to variables:
+- `Component` has two generic arguments: `Props` (stays the same as the old syntax) and `This` (maps to `Public & Private` in the old syntax)
+- The new `FC` type is used as the `this` type on components, specifying `Props` and `This`.
+- `cx` and `root` keys are no longer allowed to be used as props or internal state.
+- `cx` has been removed as an argument. It is now on `this`.
+- `root` and `children` have been moved from `cx` to `this`. `root` is still initialized after the initial component execution.
+	- `children` has better types now, accurately representing that it will always be an array with elements being the type you specify in Props/This
+- `DLElement` has been removed. Use `ComponentInstance` with a proper `Component` type instead.
+- `ComponentContext` now takes a `Component` type to align with the other `Component*` helpers.
+
+Here are some examples:
+```tsx
+// old
+const App: Component = function () {
+	return (
+		<div>
+			<NavBar />
+			<div class="red">this text is red!</div>
+		</div>
+	);
+};
+App.style = css`
+	:scope {
+		height: 100vh;
+	}
+	.red {
+		color: red;
+	}
+`;
+
+// new
+function App(this: FC) {
+	return (
+		<div>
+			<NavBar />
+			<div class="red">this text is red!</div>
+		</div>
+	);
+};
+App.style = css`
+	:scope {
+		height: 100vh;
+	}
+	.red {
+		color: red;
+	}
+`;
+
+// old
+let ChartCard: Component<{}, { chart: HTMLCanvasElement }> = function (cx) {
+	cx.mount = () => {
+		// mount the chart on the client once the canvas is constructed
+		let chart = new Chart(this.chart as HTMLCanvasElement, {
+			/* ... */
+		});
+
+		// update the chart on data changes ...
+	}
+
+	return (
+		<div>
+			<h1>Chart</h1>
+			<canvas this={use(this.chart)} />
+		</div>
+	);
+};
+
+// new
+function ChartCard(this: FC<{}, {
+	chart: HTMLCanvasElement
+}>) {
+	this.cx.mount = () => {
+		// mount the chart on the client once the canvas is constructed
+		let chart = new Chart(this.chart as HTMLCanvasElement, {
+			/* ... */
+		});
+
+		// update the chart on data changes ...
+	};
+
+	return (
+		<div>
+			<h1>Chart</h1>
+			<canvas this={use(this.chart)} />
+		</div>
+	);
+};
+```
+
+## Rendering changes
+
+`true`/`false` are no longer rendered as text, matching what React does visually. `null`/`undefined`/`boolean` are rendered as empty comments instead.
+
+## Reactivity
+
+`use(x).andThen(yes, no)` is now `use(x).and(yes).or(no)`
+
+```tsx
+// old
+{
+	use(this.mobile).andThen(<Mobile />, <Desktop />);
+}
+
+// new
+{
+	use(this.mobile).and(<Mobile />).or(<Desktop />);
+}
+```
+
+## Router revamp
+
+Layouts are no longer instantiated by the user.
+Show targets that return functions are now cached instead of being reinstantiated every route invocation.
+`Router.route` is no longer available, and now is automatically called for the initial navigation.
+
+Async routes are now available!
+
+### SSR/prerendering
+Remove any manual `Router.route` calls with custom paths and replace them with the `initial` prop.
+`initial` prop has the type `[path: string, origin: string]` and both must be specified. You can use a fake origin if needed.
+
+## Stores
+Stores have been moved to `dreamland/util`. There's also now a `deserializeState` and `serializeState` function for more powerful stores.

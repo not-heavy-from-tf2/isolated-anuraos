@@ -1,0 +1,51 @@
+<title>Proxy Sandbox Controller</title>
+<script>
+	function wake(controller) {
+		window.parent.postMessage({ $sandboxsw$type: "ready" }, "*");
+	}
+	navigator.serviceWorker
+		.register("/sw.js", {
+			scope: "./",
+		})
+		.then((registration) => {
+			if (navigator.serviceWorker.controller) {
+				// there's probably already a service worker
+				wake(navigator.serviceWorker.controller);
+			} else {
+				// there's no service worker, wait until we're controlled
+				navigator.serviceWorker.addEventListener("controllerchange", () => {
+					wake(navigator.serviceWorker.controller);
+				});
+			}
+		})
+		.catch((error) => {
+			console.error("Service Worker registration failed:", error);
+			window.parent.postMessage(
+				{ $sandboxsw$type: "initerror", message: error.message },
+				"*"
+			);
+		});
+
+	// chrome -> controller -> service worker
+	window.addEventListener("message", (event) => {
+		if (!navigator.serviceWorker.controller) {
+			console.error("No service worker controller to send message to.");
+			return;
+		}
+
+		// forward messageport
+		navigator.serviceWorker.controller.postMessage(event.data, event.ports);
+	});
+
+	// service worker -> controller -> chrome
+	// the sandbox SW broadcasts $controller$swrevive when it activates so that
+	// the chrome controller can re-establish its message port. since the chrome
+	// is at a different origin from this SW it can't listen directly, so we
+	// forward the revive notification up to the parent.
+	navigator.serviceWorker.addEventListener("message", (event) => {
+		if (!event.data || typeof event.data !== "object") return;
+		if (event.data.$controller$swrevive) {
+			window.parent.postMessage({ $controller$swrevive: {} }, "*");
+		}
+	});
+</script>

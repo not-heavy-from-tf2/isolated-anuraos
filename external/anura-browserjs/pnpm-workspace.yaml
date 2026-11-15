@@ -1,0 +1,26 @@
+ignoredBuiltDependencies:
+  - bufferutil
+
+packages:
+  - "packages/chrome"
+  - "packages/cdp"
+  - "packages/devtools"
+  - "packages/sandbox"
+  - "packages/inject"
+  - "external/dreamlandjs"
+  - "packages/scramjet"
+  - "packages/scramjet/packages/core"
+  - "packages/scramjet/packages/bootstrap"
+  - "packages/scramjet/packages/controller"
+  - "packages/scramjet/packages/demo"
+  - "packages/scramjet/packages/rpc"
+  - "packages/scramjet/packages/create-proxy-app"
+  - "packages/scramjet/packages/utils"
+  - "packages/scramjet/packages/runway"
+
+catalog:
+  "@mercuryworkshop/wisp-js": 0.4.1
+  "@mercuryworkshop/proxy-transports": 1.0.2
+  "@mercuryworkshop/libcurl-transport": 2.0.5
+  "@mercuryworkshop/epoxy-transport": 3.0.1
+  htmlparser2: ^12.0.0

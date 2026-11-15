@@ -1,0 +1,6 @@
+[submodule "external/dreamlandjs"]
+	path = external/dreamlandjs
+	url = https://github.com/MercuryWorkshop/dreamlandjs
+[submodule "external/playwright"]
+	path = external/playwright
+	url = https://github.com/HeyPuter/playwright

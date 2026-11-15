@@ -1,0 +1,7 @@
+pnpm-lock.yaml
+dist/
+rewriter/
+playwright/
+external/
+
+packages/cdp

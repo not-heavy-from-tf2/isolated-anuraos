@@ -1,0 +1,38 @@
+{
+	"name": "aboutproxy-2",
+	"private": true,
+	"version": "0.0.0",
+	"license": "AGPL-3.0-only",
+	"type": "module",
+	"scripts": {
+		"dev": "vite",
+		"build": "vite build",
+		"preview": "vite preview"
+	},
+	"devDependencies": {
+		"@mercuryworkshop/epoxy-tls": "3.0.0-alpha.1",
+		"typescript": "~5.9.3",
+		"vite": "^7.1.12"
+	},
+	"dependencies": {
+		"@heyputer/puter.js": "^2.1.2",
+		"@iconify/types": "^2.0.0",
+		"@ktibow/iconset-ion": "^8.0.13",
+		"@ktibow/iconset-material-symbols": "^0.0.1764827375",
+		"@mercuryworkshop/epoxy-transport": "catalog:",
+		"@mercuryworkshop/libcurl-transport": "catalog:",
+		"@mercuryworkshop/proxy-transports": "catalog:",
+		"@mercuryworkshop/rpc": "workspace:*",
+		"@mercuryworkshop/scramjet": "workspace:*",
+		"devtools-protocol": "^0.0.1339468",
+		"domhandler": "^5.0.3",
+		"dreamland": "workspace:dreamland",
+		"html-to-image": "^1.11.13",
+		"html2canvas": "^1.4.1",
+		"htmlparser2": "catalog:",
+		"monaco-editor": "^0.54.0",
+		"tldts": "^7.0.11",
+		"vite-plugin-singlefile": "^2.3.0",
+		"vite-plugin-static-copy": "^3.1.0"
+	}
+}

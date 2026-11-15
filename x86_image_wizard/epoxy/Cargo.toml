@@ -1,0 +1,14 @@
+[workspace]
+resolver = "2"
+members = ["server", "client", "wisp", "simple-wisp-client"]
+
+[profile.release]
+lto = true
+debug = true
+panic = "abort"
+codegen-units = 1
+opt-level = 3
+
+[patch.crates-io]
+fastwebsockets = { git = "https://github.com/r58Playz/fastwebsockets" }
+h2 = { git = "https://github.com/r58Playz/h2-wasm" }
