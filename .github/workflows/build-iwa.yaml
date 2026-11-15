@@ -1,0 +1,57 @@
+name: Build & Sign Isolated Web App
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-iwa:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Build project if package.json exists
+        run: |
+          if [ -f "package.json" ]; then
+            npm ci || npm install
+            npm run build --if-present
+          fi
+
+      - name: Install wbn and wbn-sign
+        run: npm install -g wbn wbn-sign
+
+      - name: Prepare Ed25519 Signing Key
+        run: |
+          if [ -n "${{ secrets.IWA_PRIVATE_KEY }}" ]; then
+            echo "${{ secrets.IWA_PRIVATE_KEY }}" > private_key.pem
+          else
+            openssl genpkey -algorithm Ed25519 -out private_key.pem
+          fi
+
+      - name: Bundle and Sign IWA
+        run: |
+          # Auto-detect build folder (dist, build, public, or root)
+          if [ -d "dist" ]; then TARGET_DIR="dist"
+          elif [ -d "build" ]; then TARGET_DIR="build"
+          elif [ -d "public" ]; then TARGET_DIR="public"
+          else TARGET_DIR="."; fi
+
+          wbn --dir "$TARGET_DIR" --baseURL "isolated-app://placeholder/" --output unsigned.wbn
+          wbn-sign --input unsigned.wbn --privateKey private_key.pem --output app.swbn
+
+      - name: Publish Release with .swbn
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: iwa-build-${{ github.run_number }}
+          name: Isolated Web App Build #${{ github.run_number }}
+          files: app.swbn
