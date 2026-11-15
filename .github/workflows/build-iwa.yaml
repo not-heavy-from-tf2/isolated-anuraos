@@ -20,6 +20,7 @@ jobs:
         with:
           node-version: '20'
 
+      # 1. Build step (if your repo uses React, Vite, etc.)
       - name: Build project if package.json exists
         run: |
           if [ -f "package.json" ]; then
@@ -27,9 +28,11 @@ jobs:
             npm run build --if-present
           fi
 
+      # 2. Install IWA bundling & signing CLI tools
       - name: Install wbn and wbn-sign
         run: npm install -g wbn wbn-sign
 
+      # 3. Load signing key from GitHub Secrets or generate one automatically
       - name: Prepare Ed25519 Signing Key
         run: |
           if [ -n "${{ secrets.IWA_PRIVATE_KEY }}" ]; then
@@ -38,17 +41,25 @@ jobs:
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
+      # 4. Calculate App ID, bundle, and sign into app.swbn
       - name: Bundle and Sign IWA
         run: |
-          # Auto-detect build folder (dist, build, public, or root)
           if [ -d "dist" ]; then TARGET_DIR="dist"
           elif [ -d "build" ]; then TARGET_DIR="build"
           elif [ -d "public" ]; then TARGET_DIR="public"
           else TARGET_DIR="."; fi
 
-          wbn --dir "$TARGET_DIR" --baseURL "isolated-app://placeholder/" --output unsigned.wbn
-          wbn-sign --input unsigned.wbn --privateKey private_key.pem --output app.swbn
+          # Extract exact isolated-app:// origin URL from the private key
+          APP_URL=$(wbn-dump-id -k private_key.pem -s)
+          echo "Building IWA for origin: $APP_URL"
 
+          # Create unsigned bundle with the matching baseURL
+          wbn --dir "$TARGET_DIR" --baseURL "$APP_URL" --output unsigned.wbn
+
+          # Sign using the updated wbn-sign CLI syntax
+          wbn-sign sign -i unsigned.wbn -k private_key.pem -o app.swbn
+
+      # 5. Upload the .swbn file to GitHub Releases
       - name: Publish Release with .swbn
         uses: softprops/action-gh-release@v2
         with:
