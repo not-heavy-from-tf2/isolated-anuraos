@@ -36,7 +36,7 @@ jobs:
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
-      - name: Bundle and Sign IWA
+            - name: Bundle and Sign IWA
         run: |
           if [ -d "dist" ]; then TARGET_DIR="dist"
           elif [ -d "build" ]; then TARGET_DIR="build"
@@ -54,7 +54,9 @@ jobs:
 
             (async () => {
               const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
-              const baseUrl = await new WebBundleId(privateKey).serializeWithIsolatedWebAppOrigin();
+              const bundleIdObj = new WebBundleId(privateKey);
+              const webBundleId = await bundleIdObj.serialize();
+              const baseUrl = await bundleIdObj.serializeWithIsolatedWebAppOrigin();
               console.log("Building IWA for origin:", baseUrl);
 
               const targetDir = process.env.TARGET_DIR;
@@ -95,14 +97,16 @@ jobs:
               addFiles(targetDir);
               const unsignedBundle = builder.createBundle();
 
-              const signer = new IntegrityBlockSigner(unsignedBundle, {
-                key: privateKey,
-                signingStrategy: new NodeCryptoSigningStrategy(privateKey),
-              });
+              const signer = new IntegrityBlockSigner(
+                unsignedBundle,
+                webBundleId,
+                [new NodeCryptoSigningStrategy(privateKey)]
+              );
               const { signedWebBundle } = await signer.sign();
               fs.writeFileSync("app.swbn", signedWebBundle);
             })();
           '
+
 
       - name: Publish Release with .swbn
         uses: softprops/action-gh-release@v2
