@@ -12,7 +12,7 @@ permissions:
 jobs:
   build-iwa:
     runs-on: ubuntu-latest
-    timeout-minutes: 15
+    timeout-minutes: 10
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -24,7 +24,7 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Build and assemble all runtime files into static/
+      - name: Build and assemble runtime files into static/
         run: |
           sudo apt-get update && sudo apt-get install -y jq uuid-runtime curl rsync
 
@@ -40,12 +40,13 @@ jobs:
 
           rm -rf static && mkdir -p static
 
-          # Preserve apps/*/src/ by anchoring excludes to the root (/)
+          # Exclude /external and dev folders so thousands of submodule source files aren't packed
           rsync -a \
             --exclude='/.git' \
             --exclude='/.github' \
             --exclude='/node_modules' \
             --exclude='/src' \
+            --exclude='/external' \
             --exclude='/server' \
             --exclude='/documentation' \
             --exclude='/static' \
@@ -53,12 +54,13 @@ jobs:
             --exclude='/build' \
             --exclude='/private_key.pem' \
             --exclude='/app.swbn' \
+            --exclude='*.map' \
             ./ static/
 
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Install v86 via npm (fast, reliable, no hanging curl) and copy its build/bios files
+          # Copy ONLY the 4 required v86 files (~3 MB total)
           mkdir -p static/lib
           for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
             FOUND=$(find . -name "$f" -not -path "./static/*" -not -path "./node_modules/*" | head -n 1)
@@ -79,7 +81,7 @@ jobs:
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
           fi
 
-          # Ensure static/browser/controller.sw.js exists
+          # Copy ONLY compiled browser dist files
           mkdir -p static/browser
           if [ -d "external/anura-browserjs/packages/chrome/dist" ]; then
             cp -rf external/anura-browserjs/packages/chrome/dist/* static/browser/
@@ -113,7 +115,6 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // Comprehensive shim for Window, Iframes, and ServiceWorkerGlobalScope
             const sharedShim = `
               (function() {
                 let policy = null;
@@ -125,7 +126,6 @@ jobs:
                   });
                 }
 
-                // Patch DOMParser.prototype.parseFromString for TrustedHTML
                 if (typeof DOMParser !== "undefined" && policy) {
                   const origParse = DOMParser.prototype.parseFromString;
                   DOMParser.prototype.parseFromString = function(str, type) {
@@ -134,7 +134,6 @@ jobs:
                   };
                 }
 
-                // Patch ajv Function() schema compiler inside filer.min.js
                 const NativeFunction = self.Function;
                 self.Function = function(...args) {
                   const body = args[args.length - 1] || "";
@@ -146,7 +145,6 @@ jobs:
                   return NativeFunction.apply(this, args);
                 };
 
-                // Upgrade ws:// to wss:// for IWA CSP compliance
                 if (self.WebSocket) {
                   const NativeWebSocket = self.WebSocket;
                   self.WebSocket = function(url, protocols) {
@@ -165,7 +163,6 @@ jobs:
                   self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
                 }
 
-                // Reload once on first boot after Service Worker claims control
                 if (typeof window !== "undefined" && window === window.top && "serviceWorker" in navigator) {
                   navigator.serviceWorker.addEventListener("controllerchange", () => {
                     if (!sessionStorage.getItem("iwa_sw_reloaded")) {
@@ -179,7 +176,6 @@ jobs:
 
             fs.writeFileSync(path.join("static", "iwa-shim.js"), sharedShim);
 
-            // Inject /iwa-shim.js into ALL .html files (main page + every app iframe)
             function injectShimIntoHtml(dir) {
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
@@ -200,7 +196,6 @@ jobs:
             }
             injectShimIntoHtml("static");
 
-            // Prepend shim + immediate clients.claim() to anura-sw.js
             const swPath = path.join("static", "anura-sw.js");
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
@@ -219,7 +214,13 @@ jobs:
             const targetDir = "static";
             const builder = new BundleBuilder("b2");
 
-            const headers = {
+            // Minimal headers for non-document assets to keep CBOR metadata well under Chrome's 1MB limit
+            const assetHeaders = {
+              "Cross-Origin-Resource-Policy": "same-origin"
+            };
+
+            // Full isolation + CSP headers for HTML and JS documents/workers
+            const docHeaders = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
@@ -248,7 +249,9 @@ jobs:
                   if (relPath.endsWith(".js") || relPath.endsWith(".mjs") || relPath.endsWith(".ajs")) contentType = "application/javascript";
                   if (relPath.endsWith(".wasm")) contentType = "application/wasm";
 
-                  const fileHeaders = { ...headers, "Content-Type": contentType };
+                  const isDocOrScript = relPath.endsWith(".html") || relPath.endsWith(".js") || relPath.endsWith(".mjs");
+                  const baseHdrs = isDocOrScript ? docHeaders : assetHeaders;
+                  const fileHeaders = { ...baseHdrs, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
 
                   if (!validIcon && relPath.endsWith(".png") && content.length >= 24 && content.toString("ascii", 12, 16) === "IHDR") {
@@ -296,7 +299,7 @@ jobs:
 
             addExchangeSafe(
               baseUrl + ".well-known/manifest.webmanifest",
-              { ...headers, "Content-Type": "application/manifest+json" },
+              { ...assetHeaders, "Content-Type": "application/manifest+json" },
               Buffer.from(JSON.stringify(manifest, null, 2))
             );
 
