@@ -32,20 +32,21 @@ jobs:
 
           # Build core libraries, TypeScript bundle, CSS, and config
           make build/bootstrap
-          make external-libs || true
+          make external-libs
           make bundle
-          make public/config.json || true
+          make public/config.json
 
-          # Assemble final web root into static/ matching Makefile's static target
+          # Assemble final web root into static/
           rm -rf static && mkdir -p static
           cp -r public/* static/
           cp -r build/* static/
           [ -d "bin" ] && cp -r bin static/
           [ -d "apps" ] && cp -r apps static/
+          [ -d "assets" ] && cp -r assets static/
           [ -d "external/anura-browserjs/packages/chrome/dist" ] && cp -r external/anura-browserjs/packages/chrome/dist static/browser
 
-          echo "=== Sample files in static/ ==="
-          find static -maxdepth 4 | head -n 40
+          echo "=== Folder sizes in static/ ==="
+          du -sh static/*
 
       - name: Bundle and Sign IWA
         env:
@@ -183,6 +184,7 @@ jobs:
             );
             const { signedWebBundle } = await signer.sign();
             fs.writeFileSync("app.swbn", signedWebBundle);
+            console.log(`Final app.swbn size: ${(signedWebBundle.length / (1024 * 1024)).toFixed(2)} MB`);
           })();
           EOF
 
