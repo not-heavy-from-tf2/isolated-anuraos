@@ -85,8 +85,8 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // 1. Create external /iwa-shim.js for window Trusted Types & ajv Function() bypass
-            const ttPolicySnippet = `
+            // Shared shim for both Window and ServiceWorkerGlobalScope
+            const sharedShim = `
               if (self.trustedTypes && self.trustedTypes.createPolicy && !self.trustedTypes.defaultPolicy) {
                 self.trustedTypes.createPolicy('default', {
                   createHTML: (s) => s,
@@ -94,12 +94,9 @@ jobs:
                   createScriptURL: (s) => s
                 });
               }
-            `;
 
-            const shimCode = `
-              ${ttPolicySnippet}
-              const NativeFunction = window.Function;
-              window.Function = function(...args) {
+              const NativeFunction = self.Function;
+              self.Function = function(...args) {
                 const body = args[args.length - 1] || "";
                 if (typeof body === "string" && (body.includes("validate") || body.includes("vErrors"))) {
                   return function() {
@@ -108,10 +105,29 @@ jobs:
                 }
                 return NativeFunction.apply(this, args);
               };
-            `;
-            fs.writeFileSync(path.join("static", "iwa-shim.js"), shimCode);
 
-            // Inject /iwa-shim.js as the very first script in <head>
+              if (self.WebSocket) {
+                const NativeWebSocket = self.WebSocket;
+                self.WebSocket = function(url, protocols) {
+                  let fixedUrl = String(url);
+                  if (fixedUrl.startsWith("ws://")) {
+                    fixedUrl = "wss://" + fixedUrl.slice(5);
+                  }
+                  return protocols !== undefined
+                    ? new NativeWebSocket(fixedUrl, protocols)
+                    : new NativeWebSocket(fixedUrl);
+                };
+                self.WebSocket.prototype = NativeWebSocket.prototype;
+                self.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+                self.WebSocket.OPEN = NativeWebSocket.OPEN;
+                self.WebSocket.CLOSING = NativeWebSocket.CLOSING;
+                self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
+              }
+            `;
+
+            // 1. Write /iwa-shim.js and inject into index.html
+            fs.writeFileSync(path.join("static", "iwa-shim.js"), sharedShim);
+
             const indexPath = path.join("static", "index.html");
             if (fs.existsSync(indexPath)) {
               let html = fs.readFileSync(indexPath, "utf8");
@@ -121,13 +137,13 @@ jobs:
               }
             }
 
-            // 2. Prepend Trusted Types default policy to Service Worker (anura-sw.js) so importScripts() succeeds
+            // 2. Prepend the full shim (Trusted Types + Function bypass + WebSocket) to anura-sw.js
             const swPath = path.join("static", "anura-sw.js");
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
-              if (!swCode.includes("self.trustedTypes.createPolicy('default'")) {
-                fs.writeFileSync(swPath, ttPolicySnippet + "\n" + swCode);
-                console.log("Injected Trusted Types default policy into static/anura-sw.js");
+              if (!swCode.includes("NativeFunction")) {
+                fs.writeFileSync(swPath, sharedShim + "\n" + swCode);
+                console.log("Injected full shim into static/anura-sw.js");
               }
             }
 
@@ -144,7 +160,7 @@ jobs:
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http: wss: ws: blob: data:; img-src 'self' data: blob: https:;"
+              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
 
             const addedUrls = new Set();
