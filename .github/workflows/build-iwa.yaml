@@ -102,15 +102,12 @@ jobs:
               }
             }
 
-            addFiles(".");
-            addFiles("public", "public");
+            addFiles("build", "build");
             addFiles("dist", "dist");
+            addFiles("public", "public");
+            addFiles(".");
 
-            if (!addedUrls.has(baseUrl + ".well-known/manifest.webmanifest")) {
-              console.warn("WARNING: .well-known/manifest.webmanifest was NOT found in the bundle!");
-            } else {
-              console.log("Verified: .well-known/manifest.webmanifest is packed.");
-            }
+            console.log(`Total files packed into bundle: ${addedUrls.size}`);
 
             const unsignedBundle = builder.createBundle();
 
