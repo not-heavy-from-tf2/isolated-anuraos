@@ -58,8 +58,16 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          echo "=== Folder sizes in static/ ==="
-          du -sh static/*
+          # Ensure static/lib/libv86.js exists so v86.tsx doesn't crash on boot
+          mkdir -p static/lib
+          V86_FILE=$(find . -name "libv86.js" -not -path "./static/*" | head -n 1)
+          if [ -n "$V86_FILE" ]; then
+            cp "$V86_FILE" static/lib/libv86.js
+            echo "Copied libv86.js from $V86_FILE"
+          elif [ ! -f "static/lib/libv86.js" ]; then
+            echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
+            echo "Created fallback stub for static/lib/libv86.js"
+          fi
 
       - name: Bundle and Sign IWA
         env:
@@ -82,6 +90,26 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
+            // Inject Trusted Types default policy shim into static/index.html for filer.min.js / ajv
+            const indexPath = path.join("static", "index.html");
+            if (fs.existsSync(indexPath)) {
+              let html = fs.readFileSync(indexPath, "utf8");
+              const ttShim = `<script>
+                if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
+                  window.trustedTypes.createPolicy('default', {
+                    createHTML: (s) => s,
+                    createScript: (s) => s,
+                    createScriptURL: (s) => s
+                  });
+                }
+              </script>`;
+              if (!html.includes("trustedTypes.createPolicy('default'")) {
+                html = html.replace("<head>", "<head>\n" + ttShim);
+                fs.writeFileSync(indexPath, html);
+                console.log("Injected Trusted Types default policy into static/index.html");
+              }
+            }
+
             const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
             const bundleIdObj = new WebBundleId(privateKey);
             const webBundleId = await bundleIdObj.serialize();
@@ -95,7 +123,7 @@ jobs:
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
+              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' 'unsafe-eval' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
 
             const addedUrls = new Set();
