@@ -47,10 +47,10 @@ jobs:
           echo "=== Sample files in static/ ==="
           find static -maxdepth 4 | head -n 40
 
-            - name: Bundle and Sign IWA
+      - name: Bundle and Sign IWA
         env:
           IWA_PRIVATE_KEY: ${{ secrets.IWA_PRIVATE_KEY }}
-         run: |
+        run: |
           npm install --no-save wbn wbn-sign mime-types
 
           node << 'EOF'
