@@ -85,7 +85,7 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // 1. Create external /iwa-shim.js for Trusted Types (allows innerHTML & script URLs)
+            // Create external /iwa-shim.js for Trusted Types & ajv Function() bypass
             const shimCode = `
               if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
                 window.trustedTypes.createPolicy('default', {
@@ -94,6 +94,17 @@ jobs:
                   createScriptURL: (s) => s
                 });
               }
+
+              const NativeFunction = window.Function;
+              window.Function = function(...args) {
+                const body = args[args.length - 1] || "";
+                if (typeof body === "string" && (body.includes("validate") || body.includes("vErrors"))) {
+                  return function() {
+                    return function() { return true; };
+                  };
+                }
+                return NativeFunction.apply(this, args);
+              };
             `;
             fs.writeFileSync(path.join("static", "iwa-shim.js"), shimCode);
 
@@ -106,27 +117,6 @@ jobs:
                 fs.writeFileSync(indexPath, html);
               }
             }
-
-            // 2. Patch filer.min.js so ajv skips new Function()
-            function patchFiler(dir) {
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  patchFiler(fullPath);
-                } else if (entry.name === "filer.min.js") {
-                  let code = fs.readFileSync(fullPath, "utf8");
-                  const patched = code.replace(
-                    /new Function\("refVal",[^)]+\)/g,
-                    '(function(){return function(){return true;}})'
-                  );
-                  if (patched !== code) {
-                    fs.writeFileSync(fullPath, patched);
-                    console.log("Patched new Function() out of:", fullPath);
-                  }
-                }
-              }
-            }
-            patchFiler("static");
 
             const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
             const bundleIdObj = new WebBundleId(privateKey);
