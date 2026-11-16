@@ -1,47 +1,3 @@
-name: Build & Sign Isolated Web App
-
-on:
-  push:
-    branches: [ main ]
-  workflow_dispatch:
-
-permissions:
-  contents: write
-
-jobs:
-  build-iwa:
-    runs-on: ubuntu-latest
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: '20'
-
-      # 1. Build step (if your repo uses React, Vite, etc.)
-      - name: Build project if package.json exists
-        run: |
-          if [ -f "package.json" ]; then
-            npm ci || npm install
-            npm run build --if-present
-          fi
-
-      # 2. Install IWA bundling & signing CLI tools
-      - name: Install wbn and wbn-sign
-        run: npm install -g wbn wbn-sign
-
-      # 3. Load signing key from GitHub Secrets or generate one automatically
-      - name: Prepare Ed25519 Signing Key
-        run: |
-          if [ -n "${{ secrets.IWA_PRIVATE_KEY }}" ]; then
-            echo "${{ secrets.IWA_PRIVATE_KEY }}" > private_key.pem
-          else
-            openssl genpkey -algorithm Ed25519 -out private_key.pem
-          fi
-
-      # 4. Calculate App ID, inject IWA headers, bundle, and sign
       - name: Bundle and Sign IWA
         run: |
           if [ -d "dist" ]; then TARGET_DIR="dist"
@@ -49,60 +5,62 @@ jobs:
           elif [ -d "public" ]; then TARGET_DIR="public"
           else TARGET_DIR="."; fi
 
-          APP_URL=$(wbn-dump-id -k private_key.pem -s)
-          echo "Building IWA for origin: $APP_URL"
+          npm install --no-save wbn wbn-sign mime-types
 
-          npm install --no-save wbn mime-types
-                  APP_URL="$APP_URL" TARGET_DIR="$TARGET_DIR" node -e '
+          TARGET_DIR="$TARGET_DIR" node -e '
             const fs = require("fs");
             const path = require("path");
             const { BundleBuilder } = require("wbn");
+            const { IntegrityBlockSigner, NodeCryptoSigningStrategy, parsePemKey, WebBundleId } = require("wbn-sign");
             const mime = require("mime-types");
 
-            const baseUrl = process.env.APP_URL;
-            const targetDir = process.env.TARGET_DIR;
-            const builder = new BundleBuilder();
+            (async () => {
+              const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
+              const baseUrl = await new WebBundleId(privateKey).serializeWithIsolatedWebAppOrigin();
+              console.log("Building IWA for origin:", baseUrl);
 
-            const headers = {
-              "Cross-Origin-Opener-Policy": "same-origin",
-              "Cross-Origin-Embedder-Policy": "require-corp",
-              "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri '\''none'\''; default-src '\''self'\''; object-src '\''none'\''; frame-ancestors '\''none'\''; script-src '\''self'\'' '\''wasm-unsafe-eval'\''; style-src '\''self'\'' '\''unsafe-inline'\''; connect-src '\''self'\'' https: wss:; img-src '\''self'\'' data: blob: https:;"
-            };
+              const targetDir = process.env.TARGET_DIR;
+              const builder = new BundleBuilder(baseUrl);
 
-            function addFiles(dir) {
-              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-                const fullPath = path.join(dir, entry.name);
-                if (entry.isDirectory()) {
-                  if (entry.name !== ".git" && entry.name !== ".github" && entry.name !== "node_modules") {
-                    addFiles(fullPath);
-                  }
-                } else {
-                  if (dir === "." && ["private_key.pem", "unsigned.wbn", "package.json", "package-lock.json"].includes(entry.name)) {
-                    continue;
-                  }
-                  let relPath = path.relative(targetDir, fullPath).replace(/\\/g, "/");
-                  const contentType = mime.lookup(fullPath) || "application/octet-stream";
-                  const fileHeaders = { ...headers, "Content-Type": contentType };
-                  builder.addExchange(baseUrl + relPath, 200, fileHeaders, fs.readFileSync(fullPath));
-                  if (relPath === "index.html") {
-                    builder.addExchange(baseUrl, 200, fileHeaders, fs.readFileSync(fullPath));
+              const headers = {
+                "Cross-Origin-Opener-Policy": "same-origin",
+                "Cross-Origin-Embedder-Policy": "require-corp",
+                "Cross-Origin-Resource-Policy": "same-origin",
+                "Content-Security-Policy": "base-uri '\''none'\''; default-src '\''self'\''; object-src '\''none'\''; frame-ancestors '\''none'\''; script-src '\''self'\'' '\''wasm-unsafe-eval'\''; style-src '\''self'\'' '\''unsafe-inline'\''; connect-src '\''self'\'' https: wss:; img-src '\''self'\'' data: blob: https:;"
+              };
+
+              function addFiles(dir) {
+                for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                  const fullPath = path.join(dir, entry.name);
+                  if (entry.isDirectory()) {
+                    if (![".git", ".github", "node_modules"].includes(entry.name)) {
+                      addFiles(fullPath);
+                    }
+                  } else {
+                    if (dir === "." && ["private_key.pem", "app.swbn", "package.json", "package-lock.json"].includes(entry.name)) {
+                      continue;
+                    }
+                    let relPath = path.relative(targetDir, fullPath).replace(/\\/g, "/");
+                    let contentType = mime.lookup(fullPath) || "application/octet-stream";
+                    if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
+
+                    const fileHeaders = { ...headers, "Content-Type": contentType };
+                    builder.addExchange(baseUrl + relPath, 200, fileHeaders, fs.readFileSync(fullPath));
+                    if (relPath === "index.html") {
+                      builder.addExchange(baseUrl, 200, fileHeaders, fs.readFileSync(fullPath));
+                    }
                   }
                 }
               }
-            }
 
-            addFiles(targetDir);
-            fs.writeFileSync("unsigned.wbn", builder.createBundle());
+              addFiles(targetDir);
+              const unsignedBundle = builder.createBundle();
+
+              const signer = new IntegrityBlockSigner(unsignedBundle, {
+                key: privateKey,
+                signingStrategy: new NodeCryptoSigningStrategy(privateKey),
+              });
+              const { signedWebBundle } = await signer.sign();
+              fs.writeFileSync("app.swbn", signedWebBundle);
+            })();
           '
-
-
-          wbn-sign -i unsigned.wbn -k private_key.pem -o app.swbn
-
-      # 5. Upload the .swbn file to GitHub Releases
-      - name: Publish Release with .swbn
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: iwa-build-${{ github.run_number }}
-          name: Isolated Web App Build #${{ github.run_number }}
-          files: app.swbn
