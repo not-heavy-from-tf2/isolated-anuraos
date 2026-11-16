@@ -12,6 +12,7 @@ permissions:
 jobs:
   build-iwa:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -33,13 +34,13 @@ jobs:
 
           touch .gitmodules
           make build/bootstrap || true
-          make external-libs || true
+          timeout 60 make external-libs || true
           make bundle || true
           make public/config.json || true
 
           rm -rf static && mkdir -p static
 
-          # Use leading slashes on excludes so apps/*/src/ is NOT excluded!
+          # Preserve apps/*/src/ by anchoring excludes to the root (/)
           rsync -a \
             --exclude='/.git' \
             --exclude='/.github' \
@@ -57,23 +58,24 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Fetch real v86 build files from jsDelivr if not built locally, verifying it's not HTML
+          # Install v86 via npm (fast, reliable, no hanging curl) and copy its build/bios files
           mkdir -p static/lib
           for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
-            FOUND=$(find . -name "$f" -not -path "./static/*" | head -n 1)
+            FOUND=$(find . -name "$f" -not -path "./static/*" -not -path "./node_modules/*" | head -n 1)
             if [ -n "$FOUND" ]; then
               cp "$FOUND" "static/lib/$f"
             fi
           done
 
           if [ ! -f "static/lib/libv86.js" ] || head -c 1 static/lib/libv86.js | grep -q "<"; then
-            curl -fsSL "https://jsdelivr.net" -o static/lib/libv86.js || true
-            curl -fsSL "https://jsdelivr.net" -o static/lib/v86.wasm || true
-            curl -fsSL "https://jsdelivr.net" -o static/lib/seabios.bin || true
-            curl -fsSL "https://jsdelivr.net" -o static/lib/vgabios.bin || true
+            npm install --no-save v86 || true
+            [ -f "node_modules/v86/build/libv86.js" ] && cp node_modules/v86/build/libv86.js static/lib/
+            [ -f "node_modules/v86/build/v86.wasm" ] && cp node_modules/v86/build/v86.wasm static/lib/
+            [ -f "node_modules/v86/bios/seabios.bin" ] && cp node_modules/v86/bios/seabios.bin static/lib/
+            [ -f "node_modules/v86/bios/vgabios.bin" ] && cp node_modules/v86/bios/vgabios.bin static/lib/
           fi
 
-          if [ ! -f "static/lib/libv86.js" ] || head -c 1 static/lib/libv86.js | grep -q "<"; then
+          if [ ! -f "static/lib/libv86.js" ]; then
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
           fi
 
@@ -177,7 +179,7 @@ jobs:
 
             fs.writeFileSync(path.join("static", "iwa-shim.js"), sharedShim);
 
-            // Inject /iwa-shim.js into ALL .html files (main page + every app iframe!)
+            // Inject /iwa-shim.js into ALL .html files (main page + every app iframe)
             function injectShimIntoHtml(dir) {
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
