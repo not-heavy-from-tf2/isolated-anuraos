@@ -23,21 +23,29 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Install dependencies and run Makefile
+      - name: Build AnuraOS static site
         run: |
-          echo "=== Makefile ==="
-          cat Makefile || true
+          sudo apt-get update && sudo apt-get install -y jq uuid-runtime curl
 
-          if [ -f "package.json" ]; then
-            npm install
-          fi
+          # Create dummy .gitmodules if missing so Makefile targets don't fail
+          touch .gitmodules
 
-          if [ -f "Makefile" ]; then
-            make || true
-          fi
+          # Build core libraries, TypeScript bundle, CSS, and config
+          make build/bootstrap
+          make external-libs || true
+          make bundle
+          make public/config.json || true
 
-          echo "=== Files in workspace after make ==="
-          find . -maxdepth 3 -not -path '*/.*' -not -path './node_modules*'
+          # Assemble final web root into static/ matching Makefile's static target
+          rm -rf static && mkdir -p static
+          cp -r public/* static/
+          cp -r build/* static/
+          [ -d "bin" ] && cp -r bin static/
+          [ -d "apps" ] && cp -r apps static/
+          [ -d "external/anura-browserjs/packages/chrome/dist" ] && cp -r external/anura-browserjs/packages/chrome/dist static/browser
+
+          echo "=== Sample files in static/ ==="
+          find static -maxdepth 4 | head -n 40
 
       - name: Bundle and Sign IWA
         env:
@@ -66,6 +74,7 @@ jobs:
             const baseUrl = await bundleIdObj.serializeWithIsolatedWebAppOrigin();
             console.log("Building IWA for origin:", baseUrl);
 
+            const targetDir = "static";
             const builder = new BundleBuilder("b2");
 
             const headers = {
@@ -75,8 +84,6 @@ jobs:
               "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
 
-            const ignoredDirs = new Set([".git", ".github", "node_modules", "src", "server", "documentation"]);
-            const ignoredFiles = new Set(["private_key.pem", "app.swbn", "package.json", "package-lock.json", "tsconfig.json", ".gitignore", "Makefile"]);
             const addedUrls = new Set();
 
             function addExchangeSafe(url, fileHeaders, content) {
@@ -86,18 +93,13 @@ jobs:
               }
             }
 
-            function addFiles(dir, stripPrefix = "") {
-              if (!fs.existsSync(dir)) return;
+            function addFiles(dir) {
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
-                  if (!ignoredDirs.has(entry.name)) {
-                    addFiles(fullPath, stripPrefix);
-                  }
+                  addFiles(fullPath);
                 } else {
-                  if (dir === "." && ignoredFiles.has(entry.name)) continue;
-
-                  let relPath = path.relative(stripPrefix || ".", fullPath).replace(/\\/g, "/");
+                  let relPath = path.relative(targetDir, fullPath).replace(/\\/g, "/");
                   let contentType = mime.lookup(fullPath) || "application/octet-stream";
                   if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
                   if (relPath.endsWith(".js") || relPath.endsWith(".mjs") || relPath.endsWith(".ajs")) contentType = "application/javascript";
@@ -113,12 +115,7 @@ jobs:
               }
             }
 
-            // Pack compiled output folders first so built files take priority
-            addFiles("dist", "dist");
-            addFiles("out", "out");
-            addFiles("build", "build");
-            addFiles("public", "public");
-            addFiles(".");
+            addFiles(targetDir);
 
             // Ensure /.well-known/manifest.webmanifest is always present and valid for Chrome IWA
             if (!addedUrls.has(baseUrl + ".well-known/manifest.webmanifest")) {
@@ -132,9 +129,9 @@ jobs:
                 display: "standalone",
                 icons: [{ src: "/pwa_icon.png", sizes: "512x512", type: "image/png" }]
               };
-              if (fs.existsSync("public/manifest.json")) {
+              if (fs.existsSync("static/manifest.json")) {
                 try {
-                  const existing = JSON.parse(fs.readFileSync("public/manifest.json", "utf8"));
+                  const existing = JSON.parse(fs.readFileSync("static/manifest.json", "utf8"));
                   manifest = { ...existing, version: existing.version || "1.0.0", id: "/", start_url: "/", scope: "/" };
                 } catch (e) {}
               }
@@ -143,7 +140,7 @@ jobs:
                 { ...headers, "Content-Type": "application/manifest+json" },
                 Buffer.from(JSON.stringify(manifest, null, 2))
               );
-              console.log("Generated /.well-known/manifest.webmanifest from public/manifest.json");
+              console.log("Generated /.well-known/manifest.webmanifest");
             }
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
