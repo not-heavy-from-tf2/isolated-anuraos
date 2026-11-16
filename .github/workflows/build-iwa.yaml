@@ -41,7 +41,7 @@ jobs:
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
-         # 4. Calculate App ID, inject IWA headers, bundle, and sign
+      # 4. Calculate App ID, inject IWA headers, bundle, and sign
       - name: Bundle and Sign IWA
         run: |
           if [ -d "dist" ]; then TARGET_DIR="dist"
@@ -52,9 +52,8 @@ jobs:
           APP_URL=$(wbn-dump-id -k private_key.pem -s)
           echo "Building IWA for origin: $APP_URL"
 
-          # Create a small script using the wbn library to include required IWA headers
-          npm install wbn mime-types
-          node -e '
+          npm install --no-save wbn mime-types
+          APP_URL="$APP_URL" TARGET_DIR="$TARGET_DIR" node -e '
             const fs = require("fs");
             const path = require("path");
             const { BundleBuilder } = require("wbn");
@@ -79,6 +78,9 @@ jobs:
                     addFiles(fullPath);
                   }
                 } else {
+                  if (dir === "." && ["private_key.pem", "unsigned.wbn", "package.json", "package-lock.json"].includes(entry.name)) {
+                    continue;
+                  }
                   let relPath = path.relative(targetDir, fullPath).replace(/\\/g, "/");
                   const contentType = mime.lookup(fullPath) || "application/octet-stream";
                   const fileHeaders = { ...headers, "Content-Type": contentType };
@@ -92,9 +94,9 @@ jobs:
 
             addFiles(targetDir);
             fs.writeFileSync("unsigned.wbn", builder.createBundle());
-          ' APP_URL="$APP_URL" TARGET_DIR="$TARGET_DIR"
+          '
 
-          wbn-sign sign -i unsigned.wbn -k private_key.pem -o app.swbn
+          wbn-sign -i unsigned.wbn -k private_key.pem -o app.swbn
 
       # 5. Upload the .swbn file to GitHub Releases
       - name: Publish Release with .swbn
