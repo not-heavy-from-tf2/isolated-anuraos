@@ -29,15 +29,17 @@ jobs:
           fi
 
       - name: Prepare Ed25519 Signing Key
+        env:
+          IWA_PRIVATE_KEY: ${{ secrets.IWA_PRIVATE_KEY }}
         run: |
-          if [ -n "${{ secrets.IWA_PRIVATE_KEY }}" ]; then
-            printf "%s\n" "${{ secrets.IWA_PRIVATE_KEY }}" > private_key.pem
+          if [ -n "$IWA_PRIVATE_KEY" ]; then
+            printf "%s\n" "$IWA_PRIVATE_KEY" > private_key.pem
           else
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
-            - name: Bundle and Sign IWA
-              run: |
+      - name: Bundle and Sign IWA
+        run: |
           npm install --no-save wbn wbn-sign mime-types
 
           node << 'EOF'
