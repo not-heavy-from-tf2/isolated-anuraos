@@ -39,38 +39,42 @@ jobs:
 
           rm -rf static && mkdir -p static
 
+          # Use leading slashes on excludes so apps/*/src/ is NOT excluded!
           rsync -a \
-            --exclude='.git' \
-            --exclude='.github' \
-            --exclude='node_modules' \
-            --exclude='src' \
-            --exclude='server' \
-            --exclude='documentation' \
-            --exclude='static' \
-            --exclude='public' \
-            --exclude='build' \
-            --exclude='private_key.pem' \
-            --exclude='app.swbn' \
+            --exclude='/.git' \
+            --exclude='/.github' \
+            --exclude='/node_modules' \
+            --exclude='/src' \
+            --exclude='/server' \
+            --exclude='/documentation' \
+            --exclude='/static' \
+            --exclude='/public' \
+            --exclude='/build' \
+            --exclude='/private_key.pem' \
+            --exclude='/app.swbn' \
             ./ static/
 
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Ensure v86 emulator files exist in static/lib/
+          # Fetch real v86 build files from jsDelivr if not built locally, verifying it's not HTML
           mkdir -p static/lib
           for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
             FOUND=$(find . -name "$f" -not -path "./static/*" | head -n 1)
             if [ -n "$FOUND" ]; then
               cp "$FOUND" "static/lib/$f"
-              echo "Copied $f from $FOUND"
             fi
           done
 
-          if [ ! -f "static/lib/libv86.js" ]; then
-            curl -fsSL "https://copy.sh" -o static/lib/libv86.js || echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
-            curl -fsSL "https://copy.sh" -o static/lib/v86.wasm || true
-            curl -fsSL "https://copy.sh" -o static/lib/seabios.bin || true
-            curl -fsSL "https://copy.sh" -o static/lib/vgabios.bin || true
+          if [ ! -f "static/lib/libv86.js" ] || head -c 1 static/lib/libv86.js | grep -q "<"; then
+            curl -fsSL "https://jsdelivr.net" -o static/lib/libv86.js || true
+            curl -fsSL "https://jsdelivr.net" -o static/lib/v86.wasm || true
+            curl -fsSL "https://jsdelivr.net" -o static/lib/seabios.bin || true
+            curl -fsSL "https://jsdelivr.net" -o static/lib/vgabios.bin || true
+          fi
+
+          if [ ! -f "static/lib/libv86.js" ] || head -c 1 static/lib/libv86.js | grep -q "<"; then
+            echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
           fi
 
           # Ensure static/browser/controller.sw.js exists
@@ -107,72 +111,100 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // Shared shim for both Window and ServiceWorkerGlobalScope
+            // Comprehensive shim for Window, Iframes, and ServiceWorkerGlobalScope
             const sharedShim = `
-              if (self.trustedTypes && self.trustedTypes.createPolicy && !self.trustedTypes.defaultPolicy) {
-                self.trustedTypes.createPolicy('default', {
-                  createHTML: (s) => s,
-                  createScript: (s) => s,
-                  createScriptURL: (s) => s
-                });
-              }
+              (function() {
+                let policy = null;
+                if (self.trustedTypes && self.trustedTypes.createPolicy) {
+                  policy = self.trustedTypes.defaultPolicy || self.trustedTypes.createPolicy('default', {
+                    createHTML: (s) => s,
+                    createScript: (s) => s,
+                    createScriptURL: (s) => s
+                  });
+                }
 
-              const NativeFunction = self.Function;
-              self.Function = function(...args) {
-                const body = args[args.length - 1] || "";
-                if (typeof body === "string" && (body.includes("validate") || body.includes("vErrors"))) {
-                  return function() {
-                    return function() { return true; };
+                // Patch DOMParser.prototype.parseFromString for TrustedHTML
+                if (typeof DOMParser !== "undefined" && policy) {
+                  const origParse = DOMParser.prototype.parseFromString;
+                  DOMParser.prototype.parseFromString = function(str, type) {
+                    const input = (typeof str === "string") ? policy.createHTML(str) : str;
+                    return origParse.call(this, input, type);
                   };
                 }
-                return NativeFunction.apply(this, args);
-              };
 
-              if (self.WebSocket) {
-                const NativeWebSocket = self.WebSocket;
-                self.WebSocket = function(url, protocols) {
-                  let fixedUrl = String(url);
-                  if (fixedUrl.startsWith("ws://")) {
-                    fixedUrl = "wss://" + fixedUrl.slice(5);
+                // Patch ajv Function() schema compiler inside filer.min.js
+                const NativeFunction = self.Function;
+                self.Function = function(...args) {
+                  const body = args[args.length - 1] || "";
+                  if (typeof body === "string" && (body.includes("validate") || body.includes("vErrors"))) {
+                    return function() {
+                      return function() { return true; };
+                    };
                   }
-                  return protocols !== undefined
-                    ? new NativeWebSocket(fixedUrl, protocols)
-                    : new NativeWebSocket(fixedUrl);
+                  return NativeFunction.apply(this, args);
                 };
-                self.WebSocket.prototype = NativeWebSocket.prototype;
-                self.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
-                self.WebSocket.OPEN = NativeWebSocket.OPEN;
-                self.WebSocket.CLOSING = NativeWebSocket.CLOSING;
-                self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
-              }
 
-              // Reload once on first boot after Service Worker claims control so /fs/ and /apps/ routes resolve
-              if (typeof window !== "undefined" && "serviceWorker" in navigator) {
-                navigator.serviceWorker.addEventListener("controllerchange", () => {
-                  if (!sessionStorage.getItem("iwa_sw_reloaded")) {
-                    sessionStorage.setItem("iwa_sw_reloaded", "1");
-                    window.location.reload();
-                  }
-                });
-              }
+                // Upgrade ws:// to wss:// for IWA CSP compliance
+                if (self.WebSocket) {
+                  const NativeWebSocket = self.WebSocket;
+                  self.WebSocket = function(url, protocols) {
+                    let fixedUrl = String(url);
+                    if (fixedUrl.startsWith("ws://")) {
+                      fixedUrl = "wss://" + fixedUrl.slice(5);
+                    }
+                    return protocols !== undefined
+                      ? new NativeWebSocket(fixedUrl, protocols)
+                      : new NativeWebSocket(fixedUrl);
+                  };
+                  self.WebSocket.prototype = NativeWebSocket.prototype;
+                  self.WebSocket.CONNECTING = NativeWebSocket.CONNECTING;
+                  self.WebSocket.OPEN = NativeWebSocket.OPEN;
+                  self.WebSocket.CLOSING = NativeWebSocket.CLOSING;
+                  self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
+                }
+
+                // Reload once on first boot after Service Worker claims control
+                if (typeof window !== "undefined" && window === window.top && "serviceWorker" in navigator) {
+                  navigator.serviceWorker.addEventListener("controllerchange", () => {
+                    if (!sessionStorage.getItem("iwa_sw_reloaded")) {
+                      sessionStorage.setItem("iwa_sw_reloaded", "1");
+                      window.location.reload();
+                    }
+                  });
+                }
+              })();
             `;
 
             fs.writeFileSync(path.join("static", "iwa-shim.js"), sharedShim);
 
-            const indexPath = path.join("static", "index.html");
-            if (fs.existsSync(indexPath)) {
-              let html = fs.readFileSync(indexPath, "utf8");
-              if (!html.includes('src="/iwa-shim.js"')) {
-                html = html.replace(/<head[^>]*>/i, (match) => `${match}\n  <script src="/iwa-shim.js"></script>`);
-                fs.writeFileSync(indexPath, html);
+            // Inject /iwa-shim.js into ALL .html files (main page + every app iframe!)
+            function injectShimIntoHtml(dir) {
+              for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+                const fullPath = path.join(dir, entry.name);
+                if (entry.isDirectory()) {
+                  injectShimIntoHtml(fullPath);
+                } else if (entry.name.endsWith(".html")) {
+                  let html = fs.readFileSync(fullPath, "utf8");
+                  if (!html.includes('src="/iwa-shim.js"')) {
+                    if (/<head[^>]*>/i.test(html)) {
+                      html = html.replace(/<head[^>]*>/i, (m) => `${m}\n  <script src="/iwa-shim.js"></script>`);
+                    } else {
+                      html = `<script src="/iwa-shim.js"></script>\n` + html;
+                    }
+                    fs.writeFileSync(fullPath, html);
+                  }
+                }
               }
             }
+            injectShimIntoHtml("static");
 
+            // Prepend shim + immediate clients.claim() to anura-sw.js
             const swPath = path.join("static", "anura-sw.js");
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
               if (!swCode.includes("NativeFunction")) {
-                fs.writeFileSync(swPath, sharedShim + "\n" + swCode);
+                const swHeader = sharedShim + `\nself.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n`;
+                fs.writeFileSync(swPath, swHeader + swCode);
               }
             }
 
@@ -185,7 +217,6 @@ jobs:
             const targetDir = "static";
             const builder = new BundleBuilder("b2");
 
-            // Allow frame-ancestors 'self' so AnuraOS can open apps inside iframes
             const headers = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
