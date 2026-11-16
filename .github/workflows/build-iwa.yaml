@@ -47,10 +47,10 @@ jobs:
           echo "=== Sample files in static/ ==="
           find static -maxdepth 4 | head -n 40
 
-      - name: Bundle and Sign IWA
+            - name: Bundle and Sign IWA
         env:
           IWA_PRIVATE_KEY: ${{ secrets.IWA_PRIVATE_KEY }}
-        run: |
+         run: |
           npm install --no-save wbn wbn-sign mime-types
 
           node << 'EOF'
@@ -117,31 +117,60 @@ jobs:
 
             addFiles(targetDir);
 
-            // Ensure /.well-known/manifest.webmanifest is always present and valid for Chrome IWA
-            if (!addedUrls.has(baseUrl + ".well-known/manifest.webmanifest")) {
-              let manifest = {
-                name: "AnuraOS",
-                short_name: "AnuraOS",
-                version: "1.0.0",
-                id: "/",
-                start_url: "/",
-                scope: "/",
-                display: "standalone",
-                icons: [{ src: "/pwa_icon.png", sizes: "512x512", type: "image/png" }]
-              };
-              if (fs.existsSync("static/manifest.json")) {
-                try {
-                  const existing = JSON.parse(fs.readFileSync("static/manifest.json", "utf8"));
-                  manifest = { ...existing, version: existing.version || "1.0.0", id: "/", start_url: "/", scope: "/" };
-                } catch (e) {}
+            // Find a valid >=144x144 square PNG in static/ by reading PNG IHDR dimensions
+            let validIcon = null;
+            for (const candidate of ["pwa_icon.png", "icon.png", "icon_dark.png"]) {
+              const p = path.join(targetDir, candidate);
+              if (fs.existsSync(p)) {
+                const buf = fs.readFileSync(p);
+                if (buf.length >= 24 && buf.toString("ascii", 12, 16) === "IHDR") {
+                  const w = buf.readUInt32BE(16);
+                  const h = buf.readUInt32BE(20);
+                  console.log(`Checked ${candidate}: ${w}x${h}`);
+                  if (w === h && w >= 144) {
+                    validIcon = { src: "/" + candidate, sizes: `${w}x${h}`, type: "image/png" };
+                    break;
+                  }
+                }
               }
-              addExchangeSafe(
-                baseUrl + ".well-known/manifest.webmanifest",
-                { ...headers, "Content-Type": "application/manifest+json" },
-                Buffer.from(JSON.stringify(manifest, null, 2))
-              );
-              console.log("Generated /.well-known/manifest.webmanifest");
             }
+
+            if (!validIcon) {
+              throw new Error("No >=144x144 square PNG icon found in static/!");
+            }
+
+            // Always write /.well-known/manifest.webmanifest with the verified icon
+            let manifest = {
+              name: "AnuraOS",
+              short_name: "AnuraOS",
+              version: "1.0.0",
+              id: "/",
+              start_url: "/",
+              scope: "/",
+              display: "standalone",
+              icons: [validIcon]
+            };
+
+            if (fs.existsSync("static/manifest.json")) {
+              try {
+                const existing = JSON.parse(fs.readFileSync("static/manifest.json", "utf8"));
+                manifest = {
+                  ...existing,
+                  version: existing.version || "1.0.0",
+                  id: "/",
+                  start_url: "/",
+                  scope: "/",
+                  icons: [validIcon]
+                };
+              } catch (e) {}
+            }
+
+            addExchangeSafe(
+              baseUrl + ".well-known/manifest.webmanifest",
+              { ...headers, "Content-Type": "application/manifest+json" },
+              Buffer.from(JSON.stringify(manifest, null, 2))
+            );
+            console.log("Generated /.well-known/manifest.webmanifest with icon:", validIcon);
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
 
