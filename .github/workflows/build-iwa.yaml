@@ -56,16 +56,24 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Ensure static/lib/libv86.js exists
+          # Ensure v86 emulator files exist in static/lib/
           mkdir -p static/lib
-          V86_FILE=$(find . -name "libv86.js" -not -path "./static/*" | head -n 1)
-          if [ -n "$V86_FILE" ]; then
-            cp "$V86_FILE" static/lib/libv86.js
-          elif [ ! -f "static/lib/libv86.js" ]; then
-            echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
+          for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
+            FOUND=$(find . -name "$f" -not -path "./static/*" | head -n 1)
+            if [ -n "$FOUND" ]; then
+              cp "$FOUND" "static/lib/$f"
+              echo "Copied $f from $FOUND"
+            fi
+          done
+
+          if [ ! -f "static/lib/libv86.js" ]; then
+            curl -fsSL "https://copy.sh" -o static/lib/libv86.js || echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
+            curl -fsSL "https://copy.sh" -o static/lib/v86.wasm || true
+            curl -fsSL "https://copy.sh" -o static/lib/seabios.bin || true
+            curl -fsSL "https://copy.sh" -o static/lib/vgabios.bin || true
           fi
 
-          # Ensure static/browser/controller.sw.js exists so anura-sw.js importScripts succeeds
+          # Ensure static/browser/controller.sw.js exists
           mkdir -p static/browser
           if [ -d "external/anura-browserjs/packages/chrome/dist" ]; then
             cp -rf external/anura-browserjs/packages/chrome/dist/* static/browser/
@@ -73,10 +81,8 @@ jobs:
             CTRL_FILE=$(find . -name "controller.sw.js" -not -path "./static/*" | head -n 1)
             if [ -n "$CTRL_FILE" ]; then
               cp -rf "$(dirname "$CTRL_FILE")"/* static/browser/
-              echo "Copied browser files from $(dirname "$CTRL_FILE")"
             elif [ ! -f "static/browser/controller.sw.js" ]; then
               echo "// Fallback controller.sw.js stub for IWA" > static/browser/controller.sw.js
-              echo "Created fallback stub for static/browser/controller.sw.js"
             fi
           fi
 
@@ -139,9 +145,18 @@ jobs:
                 self.WebSocket.CLOSING = NativeWebSocket.CLOSING;
                 self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
               }
+
+              // Reload once on first boot after Service Worker claims control so /fs/ and /apps/ routes resolve
+              if (typeof window !== "undefined" && "serviceWorker" in navigator) {
+                navigator.serviceWorker.addEventListener("controllerchange", () => {
+                  if (!sessionStorage.getItem("iwa_sw_reloaded")) {
+                    sessionStorage.setItem("iwa_sw_reloaded", "1");
+                    window.location.reload();
+                  }
+                });
+              }
             `;
 
-            // 1. Write /iwa-shim.js and inject into index.html
             fs.writeFileSync(path.join("static", "iwa-shim.js"), sharedShim);
 
             const indexPath = path.join("static", "index.html");
@@ -153,13 +168,11 @@ jobs:
               }
             }
 
-            // 2. Prepend the full shim to anura-sw.js
             const swPath = path.join("static", "anura-sw.js");
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
               if (!swCode.includes("NativeFunction")) {
                 fs.writeFileSync(swPath, sharedShim + "\n" + swCode);
-                console.log("Injected full shim into static/anura-sw.js");
               }
             }
 
@@ -172,11 +185,12 @@ jobs:
             const targetDir = "static";
             const builder = new BundleBuilder("b2");
 
+            // Allow frame-ancestors 'self' so AnuraOS can open apps inside iframes
             const headers = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
+              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
 
             const addedUrls = new Set();
@@ -199,6 +213,7 @@ jobs:
                   let contentType = mime.lookup(fullPath) || "application/octet-stream";
                   if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
                   if (relPath.endsWith(".js") || relPath.endsWith(".mjs") || relPath.endsWith(".ajs")) contentType = "application/javascript";
+                  if (relPath.endsWith(".wasm")) contentType = "application/wasm";
 
                   const fileHeaders = { ...headers, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
@@ -261,6 +276,7 @@ jobs:
               [new NodeCryptoSigningStrategy(privateKey)]
             );
             const { signedWebBundle } = await signer.sign();
+
             fs.writeFileSync("app.swbn", signedWebBundle);
             console.log(`Final app.swbn size: ${(signedWebBundle.length / (1024 * 1024)).toFixed(2)} MB`);
           })();
