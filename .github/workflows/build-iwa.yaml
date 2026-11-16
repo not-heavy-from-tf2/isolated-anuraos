@@ -53,7 +53,7 @@ jobs:
           echo "Building IWA for origin: $APP_URL"
 
           npm install --no-save wbn mime-types
-          APP_URL="$APP_URL" TARGET_DIR="$TARGET_DIR" node -e '
+                  APP_URL="$APP_URL" TARGET_DIR="$TARGET_DIR" node -e '
             const fs = require("fs");
             const path = require("path");
             const { BundleBuilder } = require("wbn");
@@ -61,7 +61,7 @@ jobs:
 
             const baseUrl = process.env.APP_URL;
             const targetDir = process.env.TARGET_DIR;
-            const builder = new BundleBuilder(baseUrl);
+            const builder = new BundleBuilder();
 
             const headers = {
               "Cross-Origin-Opener-Policy": "same-origin",
@@ -95,6 +95,7 @@ jobs:
             addFiles(targetDir);
             fs.writeFileSync("unsigned.wbn", builder.createBundle());
           '
+
 
           wbn-sign -i unsigned.wbn -k private_key.pem -o app.swbn
 
