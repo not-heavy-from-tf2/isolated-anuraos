@@ -1,3 +1,4 @@
-Anura OS fully running as a Isolated Web App.
+﻿# AnuraOS as an IWA
+This is mostly AI generated but the actual code of Anura is unchanged.
 
-Heavily AI generated I have no clue how GitHub workflows work.
+Go to `chrome://iwa-dev` to install and run the SWBN file
