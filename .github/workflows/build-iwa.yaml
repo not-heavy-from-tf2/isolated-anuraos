@@ -85,16 +85,19 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // Create external /iwa-shim.js for Trusted Types & ajv Function() bypass
-            const shimCode = `
-              if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
-                window.trustedTypes.createPolicy('default', {
+            // 1. Create external /iwa-shim.js for window Trusted Types & ajv Function() bypass
+            const ttPolicySnippet = `
+              if (self.trustedTypes && self.trustedTypes.createPolicy && !self.trustedTypes.defaultPolicy) {
+                self.trustedTypes.createPolicy('default', {
                   createHTML: (s) => s,
                   createScript: (s) => s,
                   createScriptURL: (s) => s
                 });
               }
+            `;
 
+            const shimCode = `
+              ${ttPolicySnippet}
               const NativeFunction = window.Function;
               window.Function = function(...args) {
                 const body = args[args.length - 1] || "";
@@ -118,6 +121,16 @@ jobs:
               }
             }
 
+            // 2. Prepend Trusted Types default policy to Service Worker (anura-sw.js) so importScripts() succeeds
+            const swPath = path.join("static", "anura-sw.js");
+            if (fs.existsSync(swPath)) {
+              const swCode = fs.readFileSync(swPath, "utf8");
+              if (!swCode.includes("self.trustedTypes.createPolicy('default'")) {
+                fs.writeFileSync(swPath, ttPolicySnippet + "\n" + swCode);
+                console.log("Injected Trusted Types default policy into static/anura-sw.js");
+              }
+            }
+
             const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
             const bundleIdObj = new WebBundleId(privateKey);
             const webBundleId = await bundleIdObj.serialize();
@@ -131,7 +144,7 @@ jobs:
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
+              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: http: wss: ws: blob: data:; img-src 'self' data: blob: https:;"
             };
 
             const addedUrls = new Set();
