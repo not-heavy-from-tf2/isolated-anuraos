@@ -39,7 +39,6 @@ jobs:
 
           rm -rf static && mkdir -p static
 
-          # Copy all runtime directories from repo root, excluding dev-only folders
           rsync -a \
             --exclude='.git' \
             --exclude='.github' \
@@ -54,19 +53,15 @@ jobs:
             --exclude='app.swbn' \
             ./ static/
 
-          # Overlay public/ and build/ onto the root of static/
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Ensure static/lib/libv86.js exists so v86.tsx doesn't crash on boot
           mkdir -p static/lib
           V86_FILE=$(find . -name "libv86.js" -not -path "./static/*" | head -n 1)
           if [ -n "$V86_FILE" ]; then
             cp "$V86_FILE" static/lib/libv86.js
-            echo "Copied libv86.js from $V86_FILE"
           elif [ ! -f "static/lib/libv86.js" ]; then
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
-            echo "Created fallback stub for static/lib/libv86.js"
           fi
 
       - name: Bundle and Sign IWA
@@ -78,10 +73,45 @@ jobs:
           node << 'EOF'
           const fs = require("fs");
           const path = require("path");
+          const zlib = require("zlib");
           const { execSync } = require("child_process");
           const { BundleBuilder } = require("wbn");
           const { IntegrityBlockSigner, NodeCryptoSigningStrategy, parsePemKey, WebBundleId } = require("wbn-sign");
           const mime = require("mime-types");
+
+          function createFallbackPng(size) {
+            const width = size, height = size;
+            const raw = Buffer.alloc((width * 4 + 1) * height);
+            for (let y = 0; y < height; y++) {
+              raw[y * (width * 4 + 1)] = 0;
+              for (let x = 0; x < width; x++) {
+                const idx = y * (width * 4 + 1) + 1 + x * 4;
+                raw[idx] = 30; raw[idx + 1] = 136; raw[idx + 2] = 229; raw[idx + 3] = 255;
+              }
+            }
+            const compressed = zlib.deflateSync(raw);
+            function chunk(type, data) {
+              const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
+              const t = Buffer.from(type, "ascii");
+              const crcBuf = Buffer.concat([t, data]);
+              let crc = 0xffffffff;
+              for (const b of crcBuf) {
+                crc ^= b;
+                for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+              }
+              const crcOut = Buffer.alloc(4); crcOut.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 0);
+              return Buffer.concat([len, t, data, crcOut]);
+            }
+            const ihdr = Buffer.alloc(13);
+            ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
+            ihdr[8] = 8; ihdr[9] = 6;
+            return Buffer.concat([
+              Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
+              chunk("IHDR", ihdr),
+              chunk("IDAT", compressed),
+              chunk("IEND", Buffer.alloc(0))
+            ]);
+          }
 
           (async () => {
             if (process.env.IWA_PRIVATE_KEY && process.env.IWA_PRIVATE_KEY.trim()) {
@@ -90,7 +120,7 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // 1. Create external /iwa-shim.js (since inline <script> is forbidden in IWAs)
+            // 1. Create external /iwa-shim.js for Trusted Types
             const shimCode = `
               if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
                 window.trustedTypes.createPolicy('default', {
@@ -102,17 +132,16 @@ jobs:
             `;
             fs.writeFileSync(path.join("static", "iwa-shim.js"), shimCode);
 
-            // Load /iwa-shim.js at the top of <head> via external src
             const indexPath = path.join("static", "index.html");
             if (fs.existsSync(indexPath)) {
               let html = fs.readFileSync(indexPath, "utf8");
               if (!html.includes('src="/iwa-shim.js"')) {
-                html = html.replace("<head>", '<head>\n  <script src="/iwa-shim.js"></script>');
+                html = html.replace(/<head>/i, '<head>\n  <script src="/iwa-shim.js"></script>');
                 fs.writeFileSync(indexPath, html);
               }
             }
 
-            // 2. Patch filer.min.js to bypass ajv's runtime new Function() schema compilation
+            // 2. Patch filer.min.js safely so ajv skips new Function()
             function patchFiler(dir) {
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
@@ -121,8 +150,8 @@ jobs:
                 } else if (entry.name === "filer.min.js") {
                   let code = fs.readFileSync(fullPath, "utf8");
                   const patched = code.replace(
-                    /new Function\(([^)]+)\)/g,
-                    'function(){return function(){return true;}}'
+                    /new Function\("refVal",[^)]+\)/g,
+                    '(function(){return function(){return true;}})'
                   );
                   if (patched !== code) {
                     fs.writeFileSync(fullPath, patched);
@@ -150,6 +179,7 @@ jobs:
             };
 
             const addedUrls = new Set();
+            let validIcon = null;
 
             function addExchangeSafe(url, fileHeaders, content) {
               if (!addedUrls.has(url)) {
@@ -172,6 +202,14 @@ jobs:
                   const fileHeaders = { ...headers, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
 
+                  if (!validIcon && relPath.endsWith(".png") && content.length >= 24 && content.toString("ascii", 12, 16) === "IHDR") {
+                    const w = content.readUInt32BE(16);
+                    const h = content.readUInt32BE(20);
+                    if (w === h && w >= 144) {
+                      validIcon = { src: "/" + relPath, sizes: `${w}x${h}`, type: "image/png" };
+                    }
+                  }
+
                   addExchangeSafe(baseUrl + relPath, fileHeaders, content);
                   if (relPath === "index.html") {
                     addExchangeSafe(baseUrl, fileHeaders, content);
@@ -182,24 +220,11 @@ jobs:
 
             addFiles(targetDir);
 
-            let validIcon = null;
-            for (const candidate of ["pwa_icon.png", "icon.png", "icon_dark.png"]) {
-              const p = path.join(targetDir, candidate);
-              if (fs.existsSync(p)) {
-                const buf = fs.readFileSync(p);
-                if (buf.length >= 24 && buf.toString("ascii", 12, 16) === "IHDR") {
-                  const w = buf.readUInt32BE(16);
-                  const h = buf.readUInt32BE(20);
-                  if (w === h && w >= 144) {
-                    validIcon = { src: "/" + candidate, sizes: `${w}x${h}`, type: "image/png" };
-                    break;
-                  }
-                }
-              }
-            }
-
             if (!validIcon) {
-              throw new Error("No >=144x144 square PNG icon found in static/!");
+              const fallbackPng = createFallbackPng(192);
+              addExchangeSafe(baseUrl + "iwa-fallback-icon.png", { ...headers, "Content-Type": "image/png" }, fallbackPng);
+              validIcon = { src: "/iwa-fallback-icon.png", sizes: "192x192", type: "image/png" };
+              console.log("Generated fallback 192x192 PNG icon");
             }
 
             let manifest = {
@@ -234,9 +259,7 @@ jobs:
             );
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
-
             const unsignedBundle = builder.createBundle();
-
             const signer = new IntegrityBlockSigner(
               unsignedBundle,
               webBundleId,
@@ -252,3 +275,5 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: "iwa-build-${{ github.run_number }}"
+          name: "Isolated Web App Build #${{ github.run_number }}"
+          files: app.swbn
