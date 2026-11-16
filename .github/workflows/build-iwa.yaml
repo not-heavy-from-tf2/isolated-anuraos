@@ -23,32 +23,20 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Setup pnpm if needed
-        if: hashFiles('pnpm-lock.yaml') != ''
-        uses: pnpm/action-setup@v4
-        with:
-          version: 9
-
-      - name: Build project
+      - name: Install dependencies and run Makefile
         run: |
-          if [ -f "pnpm-lock.yaml" ]; then
-            pnpm install --no-frozen-lockfile
-          elif [ -f "package.json" ]; then
+          echo "=== Makefile ==="
+          cat Makefile || true
+
+          if [ -f "package.json" ]; then
             npm install
           fi
 
-          if [ -f "package.json" ]; then
-            echo "=== Available npm scripts ==="
-            npm run || true
-            npm run build --if-present
+          if [ -f "Makefile" ]; then
+            make || true
           fi
 
-          if [ -f "tsconfig.json" ]; then
-            echo "=== Running TypeScript compiler (tsc) ==="
-            npx tsc
-          fi
-
-          echo "=== Files in workspace after build ==="
+          echo "=== Files in workspace after make ==="
           find . -maxdepth 3 -not -path '*/.*' -not -path './node_modules*'
 
       - name: Bundle and Sign IWA
@@ -87,8 +75,8 @@ jobs:
               "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self' 'wasm-unsafe-eval' 'unsafe-inline' blob:; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
 
-            const ignoredDirs = new Set([".git", ".github", "node_modules", "src"]);
-            const ignoredFiles = new Set(["private_key.pem", "app.swbn", "package.json", "package-lock.json", "pnpm-lock.yaml", "tsconfig.json", ".gitignore"]);
+            const ignoredDirs = new Set([".git", ".github", "node_modules", "src", "server", "documentation"]);
+            const ignoredFiles = new Set(["private_key.pem", "app.swbn", "package.json", "package-lock.json", "tsconfig.json", ".gitignore", "Makefile"]);
             const addedUrls = new Set();
 
             function addExchangeSafe(url, fileHeaders, content) {
@@ -112,7 +100,7 @@ jobs:
                   let relPath = path.relative(stripPrefix || ".", fullPath).replace(/\\/g, "/");
                   let contentType = mime.lookup(fullPath) || "application/octet-stream";
                   if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
-                  if (relPath.endsWith(".js") || relPath.endsWith(".mjs")) contentType = "application/javascript";
+                  if (relPath.endsWith(".js") || relPath.endsWith(".mjs") || relPath.endsWith(".ajs")) contentType = "application/javascript";
 
                   const fileHeaders = { ...headers, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
@@ -125,11 +113,38 @@ jobs:
               }
             }
 
+            // Pack compiled output folders first so built files take priority
+            addFiles("dist", "dist");
             addFiles("out", "out");
             addFiles("build", "build");
-            addFiles("dist", "dist");
             addFiles("public", "public");
             addFiles(".");
+
+            // Ensure /.well-known/manifest.webmanifest is always present and valid for Chrome IWA
+            if (!addedUrls.has(baseUrl + ".well-known/manifest.webmanifest")) {
+              let manifest = {
+                name: "AnuraOS",
+                short_name: "AnuraOS",
+                version: "1.0.0",
+                id: "/",
+                start_url: "/",
+                scope: "/",
+                display: "standalone",
+                icons: [{ src: "/pwa_icon.png", sizes: "512x512", type: "image/png" }]
+              };
+              if (fs.existsSync("public/manifest.json")) {
+                try {
+                  const existing = JSON.parse(fs.readFileSync("public/manifest.json", "utf8"));
+                  manifest = { ...existing, version: existing.version || "1.0.0", id: "/", start_url: "/", scope: "/" };
+                } catch (e) {}
+              }
+              addExchangeSafe(
+                baseUrl + ".well-known/manifest.webmanifest",
+                { ...headers, "Content-Type": "application/manifest+json" },
+                Buffer.from(JSON.stringify(manifest, null, 2))
+              );
+              console.log("Generated /.well-known/manifest.webmanifest from public/manifest.json");
+            }
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
 
