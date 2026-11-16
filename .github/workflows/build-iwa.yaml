@@ -28,28 +28,27 @@ jobs:
             npm run build --if-present
           fi
 
-      - name: Prepare Ed25519 Signing Key
+      - name: Bundle and Sign IWA
         env:
           IWA_PRIVATE_KEY: ${{ secrets.IWA_PRIVATE_KEY }}
         run: |
-          if [ -n "$IWA_PRIVATE_KEY" ]; then
-            printf "%s\n" "$IWA_PRIVATE_KEY" > private_key.pem
-          else
-            openssl genpkey -algorithm Ed25519 -out private_key.pem
-          fi
-
-            - name: Bundle and Sign IWA
-             run: |
           npm install --no-save wbn wbn-sign mime-types
 
           node << 'EOF'
           const fs = require("fs");
           const path = require("path");
+          const { execSync } = require("child_process");
           const { BundleBuilder } = require("wbn");
           const { IntegrityBlockSigner, NodeCryptoSigningStrategy, parsePemKey, WebBundleId } = require("wbn-sign");
           const mime = require("mime-types");
 
           (async () => {
+            if (process.env.IWA_PRIVATE_KEY && process.env.IWA_PRIVATE_KEY.trim()) {
+              fs.writeFileSync("private_key.pem", process.env.IWA_PRIVATE_KEY.trim() + "\n");
+            } else {
+              execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
+            }
+
             const privateKey = parsePemKey(fs.readFileSync("private_key.pem"));
             const bundleIdObj = new WebBundleId(privateKey);
             const webBundleId = await bundleIdObj.serialize();
@@ -103,9 +102,7 @@ jobs:
               }
             }
 
-            // Pack root files first (index.html, lib/Boot.js, etc.)
             addFiles(".");
-            // Also expose anything inside public/ or dist/ at the root path
             addFiles("public", "public");
             addFiles("dist", "dist");
 
