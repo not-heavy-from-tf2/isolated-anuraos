@@ -33,11 +33,21 @@ jobs:
         run: |
           if [ -f "pnpm-lock.yaml" ]; then
             pnpm install --no-frozen-lockfile
-            pnpm run build
           elif [ -f "package.json" ]; then
             npm install
-            npm run build
           fi
+
+          if [ -f "package.json" ]; then
+            echo "=== Available npm scripts ==="
+            npm run || true
+            npm run build --if-present
+          fi
+
+          if [ -f "tsconfig.json" ]; then
+            echo "=== Running TypeScript compiler (tsc) ==="
+            npx tsc
+          fi
+
           echo "=== Files in workspace after build ==="
           find . -maxdepth 3 -not -path '*/.*' -not -path './node_modules*'
 
