@@ -56,12 +56,28 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
+          # Ensure static/lib/libv86.js exists
           mkdir -p static/lib
           V86_FILE=$(find . -name "libv86.js" -not -path "./static/*" | head -n 1)
           if [ -n "$V86_FILE" ]; then
             cp "$V86_FILE" static/lib/libv86.js
           elif [ ! -f "static/lib/libv86.js" ]; then
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
+          fi
+
+          # Ensure static/browser/controller.sw.js exists so anura-sw.js importScripts succeeds
+          mkdir -p static/browser
+          if [ -d "external/anura-browserjs/packages/chrome/dist" ]; then
+            cp -rf external/anura-browserjs/packages/chrome/dist/* static/browser/
+          else
+            CTRL_FILE=$(find . -name "controller.sw.js" -not -path "./static/*" | head -n 1)
+            if [ -n "$CTRL_FILE" ]; then
+              cp -rf "$(dirname "$CTRL_FILE")"/* static/browser/
+              echo "Copied browser files from $(dirname "$CTRL_FILE")"
+            elif [ ! -f "static/browser/controller.sw.js" ]; then
+              echo "// Fallback controller.sw.js stub for IWA" > static/browser/controller.sw.js
+              echo "Created fallback stub for static/browser/controller.sw.js"
+            fi
           fi
 
       - name: Bundle and Sign IWA
@@ -137,7 +153,7 @@ jobs:
               }
             }
 
-            // 2. Prepend the full shim (Trusted Types + Function bypass + WebSocket) to anura-sw.js
+            // 2. Prepend the full shim to anura-sw.js
             const swPath = path.join("static", "anura-sw.js");
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
