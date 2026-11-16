@@ -1,3 +1,3 @@
-this is heavily AI generated I just wanted to see if this is possible.
+Anura OS fully running as a Isolated Web App.
 
-Note to self never use the Google search AI to generate code ever again.
+Heavily AI generated I have no clue how GitHub workflows work.
