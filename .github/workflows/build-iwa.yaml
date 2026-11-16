@@ -38,8 +38,8 @@ jobs:
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
-      - name: Bundle and Sign IWA
-        run: |
+            - name: Bundle and Sign IWA
+             run: |
           npm install --no-save wbn wbn-sign mime-types
 
           node << 'EOF'
@@ -56,7 +56,6 @@ jobs:
             const baseUrl = await bundleIdObj.serializeWithIsolatedWebAppOrigin();
             console.log("Building IWA for origin:", baseUrl);
 
-            const targetDir = ".";
             const builder = new BundleBuilder("b2");
 
             const headers = {
@@ -68,33 +67,54 @@ jobs:
 
             const ignoredDirs = new Set([".git", ".github", "node_modules", "src"]);
             const ignoredFiles = new Set(["private_key.pem", "app.swbn", "package.json", "package-lock.json", "tsconfig.json", ".gitignore"]);
+            const addedUrls = new Set();
 
-            function addFiles(dir) {
+            function addExchangeSafe(url, fileHeaders, content) {
+              if (!addedUrls.has(url)) {
+                addedUrls.add(url);
+                builder.addExchange(url, 200, fileHeaders, content);
+              }
+            }
+
+            function addFiles(dir, stripPrefix = "") {
+              if (!fs.existsSync(dir)) return;
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
                 if (entry.isDirectory()) {
                   if (!ignoredDirs.has(entry.name)) {
-                    addFiles(fullPath);
+                    addFiles(fullPath, stripPrefix);
                   }
                 } else {
-                  if (dir === "." && ignoredFiles.has(entry.name)) {
-                    continue;
-                  }
-                  let relPath = path.relative(targetDir, fullPath).replace(/\\/g, "/");
+                  if (dir === "." && ignoredFiles.has(entry.name)) continue;
+
+                  let relPath = path.relative(stripPrefix || ".", fullPath).replace(/\\/g, "/");
                   let contentType = mime.lookup(fullPath) || "application/octet-stream";
                   if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
                   if (relPath.endsWith(".js") || relPath.endsWith(".mjs")) contentType = "application/javascript";
 
                   const fileHeaders = { ...headers, "Content-Type": contentType };
-                  builder.addExchange(baseUrl + relPath, 200, fileHeaders, fs.readFileSync(fullPath));
+                  const content = fs.readFileSync(fullPath);
+
+                  addExchangeSafe(baseUrl + relPath, fileHeaders, content);
                   if (relPath === "index.html") {
-                    builder.addExchange(baseUrl, 200, fileHeaders, fs.readFileSync(fullPath));
+                    addExchangeSafe(baseUrl, fileHeaders, content);
                   }
                 }
               }
             }
 
-            addFiles(targetDir);
+            // Pack root files first (index.html, lib/Boot.js, etc.)
+            addFiles(".");
+            // Also expose anything inside public/ or dist/ at the root path
+            addFiles("public", "public");
+            addFiles("dist", "dist");
+
+            if (!addedUrls.has(baseUrl + ".well-known/manifest.webmanifest")) {
+              console.warn("WARNING: .well-known/manifest.webmanifest was NOT found in the bundle!");
+            } else {
+              console.log("Verified: .well-known/manifest.webmanifest is packed.");
+            }
+
             const unsignedBundle = builder.createBundle();
 
             const signer = new IntegrityBlockSigner(
