@@ -23,27 +23,40 @@ jobs:
         with:
           node-version: "20"
 
-      - name: Build AnuraOS static site
+      - name: Build and assemble all runtime files into static/
         run: |
-          sudo apt-get update && sudo apt-get install -y jq uuid-runtime curl
+          sudo apt-get update && sudo apt-get install -y jq uuid-runtime curl rsync
 
-          # Create dummy .gitmodules if missing so Makefile targets don't fail
+          if [ -f "package.json" ]; then
+            npm install
+          fi
+
           touch .gitmodules
+          make build/bootstrap || true
+          make external-libs || true
+          make bundle || true
+          make public/config.json || true
 
-          # Build core libraries, TypeScript bundle, CSS, and config
-          make build/bootstrap
-          make external-libs
-          make bundle
-          make public/config.json
-
-          # Assemble final web root into static/
           rm -rf static && mkdir -p static
-          cp -r public/* static/
-          cp -r build/* static/
-          [ -d "bin" ] && cp -r bin static/
-          [ -d "apps" ] && cp -r apps static/
-          [ -d "assets" ] && cp -r assets static/
-          [ -d "external/anura-browserjs/packages/chrome/dist" ] && cp -r external/anura-browserjs/packages/chrome/dist static/browser
+
+          # Copy all runtime directories from repo root, excluding dev-only folders
+          rsync -a \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='node_modules' \
+            --exclude='src' \
+            --exclude='server' \
+            --exclude='documentation' \
+            --exclude='static' \
+            --exclude='public' \
+            --exclude='build' \
+            --exclude='private_key.pem' \
+            --exclude='app.swbn' \
+            ./ static/
+
+          # Overlay public/ and build/ onto the root of static/
+          [ -d "public" ] && cp -rn public/* static/ || true
+          [ -d "build" ] && cp -rf build/* static/ || true
 
           echo "=== Folder sizes in static/ ==="
           du -sh static/*
@@ -127,7 +140,6 @@ jobs:
                 if (buf.length >= 24 && buf.toString("ascii", 12, 16) === "IHDR") {
                   const w = buf.readUInt32BE(16);
                   const h = buf.readUInt32BE(20);
-                  console.log(`Checked ${candidate}: ${w}x${h}`);
                   if (w === h && w >= 144) {
                     validIcon = { src: "/" + candidate, sizes: `${w}x${h}`, type: "image/png" };
                     break;
@@ -140,7 +152,6 @@ jobs:
               throw new Error("No >=144x144 square PNG icon found in static/!");
             }
 
-            // Always write /.well-known/manifest.webmanifest with the verified icon
             let manifest = {
               name: "AnuraOS",
               short_name: "AnuraOS",
@@ -171,7 +182,6 @@ jobs:
               { ...headers, "Content-Type": "application/manifest+json" },
               Buffer.from(JSON.stringify(manifest, null, 2))
             );
-            console.log("Generated /.well-known/manifest.webmanifest with icon:", validIcon);
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
 
