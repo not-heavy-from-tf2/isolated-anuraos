@@ -73,45 +73,10 @@ jobs:
           node << 'EOF'
           const fs = require("fs");
           const path = require("path");
-          const zlib = require("zlib");
           const { execSync } = require("child_process");
           const { BundleBuilder } = require("wbn");
           const { IntegrityBlockSigner, NodeCryptoSigningStrategy, parsePemKey, WebBundleId } = require("wbn-sign");
           const mime = require("mime-types");
-
-          function createFallbackPng(size) {
-            const width = size, height = size;
-            const raw = Buffer.alloc((width * 4 + 1) * height);
-            for (let y = 0; y < height; y++) {
-              raw[y * (width * 4 + 1)] = 0;
-              for (let x = 0; x < width; x++) {
-                const idx = y * (width * 4 + 1) + 1 + x * 4;
-                raw[idx] = 30; raw[idx + 1] = 136; raw[idx + 2] = 229; raw[idx + 3] = 255;
-              }
-            }
-            const compressed = zlib.deflateSync(raw);
-            function chunk(type, data) {
-              const len = Buffer.alloc(4); len.writeUInt32BE(data.length, 0);
-              const t = Buffer.from(type, "ascii");
-              const crcBuf = Buffer.concat([t, data]);
-              let crc = 0xffffffff;
-              for (const b of crcBuf) {
-                crc ^= b;
-                for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
-              }
-              const crcOut = Buffer.alloc(4); crcOut.writeUInt32BE((crc ^ 0xffffffff) >>> 0, 0);
-              return Buffer.concat([len, t, data, crcOut]);
-            }
-            const ihdr = Buffer.alloc(13);
-            ihdr.writeUInt32BE(width, 0); ihdr.writeUInt32BE(height, 4);
-            ihdr[8] = 8; ihdr[9] = 6;
-            return Buffer.concat([
-              Buffer.from([137, 80, 78, 71, 13, 10, 26, 10]),
-              chunk("IHDR", ihdr),
-              chunk("IDAT", compressed),
-              chunk("IEND", Buffer.alloc(0))
-            ]);
-          }
 
           (async () => {
             if (process.env.IWA_PRIVATE_KEY && process.env.IWA_PRIVATE_KEY.trim()) {
@@ -120,7 +85,7 @@ jobs:
               execSync("openssl genpkey -algorithm Ed25519 -out private_key.pem");
             }
 
-            // 1. Create external /iwa-shim.js for Trusted Types
+            // 1. Create external /iwa-shim.js for Trusted Types (allows innerHTML & script URLs)
             const shimCode = `
               if (window.trustedTypes && window.trustedTypes.createPolicy && !window.trustedTypes.defaultPolicy) {
                 window.trustedTypes.createPolicy('default', {
@@ -132,16 +97,17 @@ jobs:
             `;
             fs.writeFileSync(path.join("static", "iwa-shim.js"), shimCode);
 
+            // Inject /iwa-shim.js as the very first script in <head>
             const indexPath = path.join("static", "index.html");
             if (fs.existsSync(indexPath)) {
               let html = fs.readFileSync(indexPath, "utf8");
               if (!html.includes('src="/iwa-shim.js"')) {
-                html = html.replace(/<head>/i, '<head>\n  <script src="/iwa-shim.js"></script>');
+                html = html.replace(/<head[^>]*>/i, (match) => `${match}\n  <script src="/iwa-shim.js"></script>`);
                 fs.writeFileSync(indexPath, html);
               }
             }
 
-            // 2. Patch filer.min.js safely so ajv skips new Function()
+            // 2. Patch filer.min.js so ajv skips new Function()
             function patchFiler(dir) {
               for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
                 const fullPath = path.join(dir, entry.name);
@@ -220,13 +186,6 @@ jobs:
 
             addFiles(targetDir);
 
-            if (!validIcon) {
-              const fallbackPng = createFallbackPng(192);
-              addExchangeSafe(baseUrl + "iwa-fallback-icon.png", { ...headers, "Content-Type": "image/png" }, fallbackPng);
-              validIcon = { src: "/iwa-fallback-icon.png", sizes: "192x192", type: "image/png" };
-              console.log("Generated fallback 192x192 PNG icon");
-            }
-
             let manifest = {
               name: "AnuraOS",
               short_name: "AnuraOS",
@@ -235,7 +194,7 @@ jobs:
               start_url: "/",
               scope: "/",
               display: "standalone",
-              icons: [validIcon]
+              icons: validIcon ? [validIcon] : []
             };
 
             if (fs.existsSync("static/manifest.json")) {
@@ -247,7 +206,7 @@ jobs:
                   id: "/",
                   start_url: "/",
                   scope: "/",
-                  icons: [validIcon]
+                  icons: validIcon ? [validIcon] : existing.icons
                 };
               } catch (e) {}
             }
@@ -259,6 +218,7 @@ jobs:
             );
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
+
             const unsignedBundle = builder.createBundle();
             const signer = new IntegrityBlockSigner(
               unsignedBundle,
