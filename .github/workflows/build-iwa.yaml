@@ -36,8 +36,8 @@ jobs:
             openssl genpkey -algorithm Ed25519 -out private_key.pem
           fi
 
-      - name: Bundle and Sign IWA
-        run: |
+            - name: Bundle and Sign IWA
+         run: |
           if [ -d "dist" ]; then TARGET_DIR="dist"
           elif [ -d "build" ]; then TARGET_DIR="build"
           elif [ -d "public" ]; then TARGET_DIR="public"
@@ -62,7 +62,6 @@ jobs:
 
             const targetDir = process.env.TARGET_DIR;
             const builder = new BundleBuilder("b2");
-            builder.setPrimaryURL(baseUrl);
 
             const headers = {
               "Cross-Origin-Opener-Policy": "same-origin",
