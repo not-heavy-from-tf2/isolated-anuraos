@@ -59,6 +59,10 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
+          # Copy missing libfileview icons from public/assets/icons if needed
+          mkdir -p static/apps/libfileview.lib/icons
+          [ -d "public/assets/icons" ] && cp -rn public/assets/icons/* static/apps/libfileview.lib/icons/ || true
+
           # Copy ONLY the 4 required v86 files
           mkdir -p static/lib
           for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
@@ -80,7 +84,7 @@ jobs:
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
           fi
 
-          # Copy compiled browser dist files
+          # Copy compiled browser dist files + ensure browser/index.html exists
           mkdir -p static/browser
           if [ -d "external/anura-browserjs/packages/chrome/dist" ]; then
             cp -rf external/anura-browserjs/packages/chrome/dist/* static/browser/
@@ -88,10 +92,10 @@ jobs:
             CTRL_FILE=$(find . -name "controller.sw.js" -not -path "./static/*" | head -n 1)
             if [ -n "$CTRL_FILE" ]; then
               cp -rf "$(dirname "$CTRL_FILE")"/* static/browser/
-            elif [ ! -f "static/browser/controller.sw.js" ]; then
-              echo "// Fallback controller.sw.js stub for IWA" > static/browser/controller.sw.js
             fi
           fi
+          [ ! -f "static/browser/controller.sw.js" ] && echo "// Fallback controller.sw.js" > static/browser/controller.sw.js
+          [ ! -f "static/browser/index.html" ] && echo "<!doctype html><html><body style='background:#111;color:#fff;font-family:sans-serif;padding:20px'><h3>Anura Browser</h3><p>Browser submodule was not compiled in this bundle.</p></body></html>" > static/browser/index.html
 
       - name: Bundle and Sign IWA
         env:
@@ -124,6 +128,16 @@ jobs:
                     createScriptURL: (s) => s
                   });
                 }
+
+                // Fix self.location.origin returning "null" inside ServiceWorkerGlobalScope on isolated-app://
+                try {
+                  if (self.location && (!self.location.origin || self.location.origin === "null") && self.location.href) {
+                    const m = self.location.href.match(/^(isolated-app:\\/\\/[^/]+)/);
+                    if (m) {
+                      Object.defineProperty(self.location, "origin", { get: () => m[1] });
+                    }
+                  }
+                } catch (e) {}
 
                 if (typeof DOMParser !== "undefined" && policy) {
                   const origParse = DOMParser.prototype.parseFromString;
@@ -162,7 +176,6 @@ jobs:
                   self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
                 }
 
-                // Ensure Service Worker takes control on first load before Boot.tsx fetches /fs/ and /apps/
                 if (typeof window !== "undefined" && window === window.top && "serviceWorker" in navigator) {
                   if (!navigator.serviceWorker.controller && !sessionStorage.getItem("iwa_sw_reloaded")) {
                     navigator.serviceWorker.ready.then(() => {
@@ -217,14 +230,12 @@ jobs:
             const assetHeaders = {
               "Cross-Origin-Resource-Policy": "same-origin"
             };
-
             const docHeaders = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
               "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
-
             const addedUrls = new Set();
             let validIcon = null;
 
@@ -246,12 +257,10 @@ jobs:
                   if (relPath.endsWith(".webmanifest")) contentType = "application/manifest+json";
                   if (relPath.endsWith(".js") || relPath.endsWith(".mjs") || relPath.endsWith(".ajs")) contentType = "application/javascript";
                   if (relPath.endsWith(".wasm")) contentType = "application/wasm";
-
                   const isDocOrScript = relPath.endsWith(".html") || relPath.endsWith(".js") || relPath.endsWith(".mjs");
                   const baseHdrs = isDocOrScript ? docHeaders : assetHeaders;
                   const fileHeaders = { ...baseHdrs, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
-
                   if (!validIcon && relPath.endsWith(".png") && content.length >= 24 && content.toString("ascii", 12, 16) === "IHDR") {
                     const w = content.readUInt32BE(16);
                     const h = content.readUInt32BE(20);
@@ -259,7 +268,6 @@ jobs:
                       validIcon = { src: "/" + relPath, sizes: `${w}x${h}`, type: "image/png" };
                     }
                   }
-
                   addExchangeSafe(baseUrl + relPath, fileHeaders, content);
                   if (relPath === "index.html") {
                     addExchangeSafe(baseUrl, fileHeaders, content);
@@ -267,7 +275,6 @@ jobs:
                 }
               }
             }
-
             addFiles(targetDir);
 
             let manifest = {
@@ -280,7 +287,6 @@ jobs:
               display: "standalone",
               icons: validIcon ? [validIcon] : []
             };
-
             if (fs.existsSync("static/manifest.json")) {
               try {
                 const existing = JSON.parse(fs.readFileSync("static/manifest.json", "utf8"));
@@ -294,13 +300,11 @@ jobs:
                 };
               } catch (e) {}
             }
-
             addExchangeSafe(
               baseUrl + ".well-known/manifest.webmanifest",
               { ...assetHeaders, "Content-Type": "application/manifest+json" },
               Buffer.from(JSON.stringify(manifest, null, 2))
             );
-
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
             const unsignedBundle = builder.createBundle();
             const signer = new IntegrityBlockSigner(
