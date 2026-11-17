@@ -304,7 +304,6 @@ jobs:
             );
 
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
-
             const unsignedBundle = builder.createBundle();
             const signer = new IntegrityBlockSigner(
               unsignedBundle,
@@ -312,7 +311,6 @@ jobs:
               [new NodeCryptoSigningStrategy(privateKey)]
             );
             const { signedWebBundle } = await signer.sign();
-
             fs.writeFileSync("app.swbn", signedWebBundle);
             console.log(`Final app.swbn size: ${(signedWebBundle.length / (1024 * 1024)).toFixed(2)} MB`);
           })();
