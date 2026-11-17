@@ -40,7 +40,6 @@ jobs:
 
           rm -rf static && mkdir -p static
 
-          # Exclude /external and dev folders so thousands of submodule source files aren't packed
           rsync -a \
             --exclude='/.git' \
             --exclude='/.github' \
@@ -60,7 +59,7 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Copy ONLY the 4 required v86 files (~3 MB total)
+          # Copy ONLY the 4 required v86 files
           mkdir -p static/lib
           for f in libv86.js v86.wasm seabios.bin vgabios.bin; do
             FOUND=$(find . -name "$f" -not -path "./static/*" -not -path "./node_modules/*" | head -n 1)
@@ -81,7 +80,7 @@ jobs:
             echo "window.V86 = window.V86 || class V86 {};" > static/lib/libv86.js
           fi
 
-          # Copy ONLY compiled browser dist files
+          # Copy compiled browser dist files
           mkdir -p static/browser
           if [ -d "external/anura-browserjs/packages/chrome/dist" ]; then
             cp -rf external/anura-browserjs/packages/chrome/dist/* static/browser/
@@ -163,13 +162,14 @@ jobs:
                   self.WebSocket.CLOSED = NativeWebSocket.CLOSED;
                 }
 
+                // Ensure Service Worker takes control on first load before Boot.tsx fetches /fs/ and /apps/
                 if (typeof window !== "undefined" && window === window.top && "serviceWorker" in navigator) {
-                  navigator.serviceWorker.addEventListener("controllerchange", () => {
-                    if (!sessionStorage.getItem("iwa_sw_reloaded")) {
+                  if (!navigator.serviceWorker.controller && !sessionStorage.getItem("iwa_sw_reloaded")) {
+                    navigator.serviceWorker.ready.then(() => {
                       sessionStorage.setItem("iwa_sw_reloaded", "1");
                       window.location.reload();
-                    }
-                  });
+                    });
+                  }
                 }
               })();
             `;
@@ -200,7 +200,7 @@ jobs:
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
               if (!swCode.includes("NativeFunction")) {
-                const swHeader = sharedShim + `\nself.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n`;
+                const swHeader = sharedShim + `\nself.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n`;
                 fs.writeFileSync(swPath, swHeader + swCode);
               }
             }
@@ -214,12 +214,10 @@ jobs:
             const targetDir = "static";
             const builder = new BundleBuilder("b2");
 
-            // Minimal headers for non-document assets to keep CBOR metadata well under Chrome's 1MB limit
             const assetHeaders = {
               "Cross-Origin-Resource-Policy": "same-origin"
             };
 
-            // Full isolation + CSP headers for HTML and JS documents/workers
             const docHeaders = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
