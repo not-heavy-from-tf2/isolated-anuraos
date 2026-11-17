@@ -59,9 +59,13 @@ jobs:
           [ -d "public" ] && cp -rn public/* static/ || true
           [ -d "build" ] && cp -rf build/* static/ || true
 
-          # Copy missing libfileview icons from public/assets/icons if needed
+          # Find and copy the exact folder containing folder.svg / json.svg / txt.svg into libfileview.lib/icons
           mkdir -p static/apps/libfileview.lib/icons
-          [ -d "public/assets/icons" ] && cp -rn public/assets/icons/* static/apps/libfileview.lib/icons/ || true
+          ICON_SAMPLE=$(find . -name "folder.svg" -not -path "./static/*" | head -n 1)
+          if [ -n "$ICON_SAMPLE" ]; then
+            cp -rf "$(dirname "$ICON_SAMPLE")"/* static/apps/libfileview.lib/icons/
+            echo "Copied fileview icons from $(dirname "$ICON_SAMPLE")"
+          fi
 
           # Copy ONLY the 4 required v86 files
           mkdir -p static/lib
@@ -97,6 +101,9 @@ jobs:
           [ ! -f "static/browser/controller.sw.js" ] && echo "// Fallback controller.sw.js" > static/browser/controller.sw.js
           [ ! -f "static/browser/index.html" ] && echo "<!doctype html><html><body style='background:#111;color:#fff;font-family:sans-serif;padding:20px'><h3>Anura Browser</h3><p>Browser submodule was not compiled in this bundle.</p></body></html>" > static/browser/index.html
 
+          echo "=== Inspecting anura-sw.js ==="
+          cat static/anura-sw.js || true
+
       - name: Bundle and Sign IWA
         env:
           IWA_PRIVATE_KEY: ${{ secrets.IWA_PRIVATE_KEY }}
@@ -122,14 +129,28 @@ jobs:
               (function() {
                 let policy = null;
                 if (self.trustedTypes && self.trustedTypes.createPolicy) {
-                  policy = self.trustedTypes.defaultPolicy || self.trustedTypes.createPolicy('default', {
+                  const origCreatePolicy = self.trustedTypes.createPolicy.bind(self.trustedTypes);
+                  policy = self.trustedTypes.defaultPolicy || origCreatePolicy('default', {
                     createHTML: (s) => s,
                     createScript: (s) => s,
                     createScriptURL: (s) => s
                   });
+                  // Prevent hterm or other libs from throwing when they also call createPolicy('default', ...)
+                  self.trustedTypes.createPolicy = function(name, rules) {
+                    if (name === 'default' && self.trustedTypes.defaultPolicy) {
+                      return self.trustedTypes.defaultPolicy;
+                    }
+                    try {
+                      return origCreatePolicy(name, rules);
+                    } catch (e) {
+                      if (name === 'default' && self.trustedTypes.defaultPolicy) {
+                        return self.trustedTypes.defaultPolicy;
+                      }
+                      throw e;
+                    }
+                  };
                 }
 
-                // Fix self.location.origin returning "null" inside ServiceWorkerGlobalScope on isolated-app://
                 try {
                   if (self.location && (!self.location.origin || self.location.origin === "null") && self.location.href) {
                     const m = self.location.href.match(/^(isolated-app:\\/\\/[^/]+)/);
@@ -213,7 +234,9 @@ jobs:
             if (fs.existsSync(swPath)) {
               const swCode = fs.readFileSync(swPath, "utf8");
               if (!swCode.includes("NativeFunction")) {
-                const swHeader = sharedShim + `\nself.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n`;
+                const swHeader = sharedShim +
+                  `\nself.addEventListener('install', () => self.skipWaiting());\n` +
+                  `self.addEventListener('activate', (e) => e.waitUntil(self.clients.claim()));\n`;
                 fs.writeFileSync(swPath, swHeader + swCode);
               }
             }
@@ -230,12 +253,15 @@ jobs:
             const assetHeaders = {
               "Cross-Origin-Resource-Policy": "same-origin"
             };
+
+            // Added media-src 'self' data: blob:; so data:audio/ogg notification sounds work
             const docHeaders = {
               "Cross-Origin-Opener-Policy": "same-origin",
               "Cross-Origin-Embedder-Policy": "credentialless",
               "Cross-Origin-Resource-Policy": "same-origin",
-              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
+              "Content-Security-Policy": "base-uri 'none'; default-src 'self'; object-src 'none'; frame-ancestors 'self'; script-src 'self' 'wasm-unsafe-eval'; worker-src 'self' blob:; style-src 'self' 'unsafe-inline'; media-src 'self' data: blob:; connect-src 'self' https: wss: blob: data:; img-src 'self' data: blob: https:;"
             };
+
             const addedUrls = new Set();
             let validIcon = null;
 
@@ -261,6 +287,7 @@ jobs:
                   const baseHdrs = isDocOrScript ? docHeaders : assetHeaders;
                   const fileHeaders = { ...baseHdrs, "Content-Type": contentType };
                   const content = fs.readFileSync(fullPath);
+
                   if (!validIcon && relPath.endsWith(".png") && content.length >= 24 && content.toString("ascii", 12, 16) === "IHDR") {
                     const w = content.readUInt32BE(16);
                     const h = content.readUInt32BE(20);
@@ -268,6 +295,7 @@ jobs:
                       validIcon = { src: "/" + relPath, sizes: `${w}x${h}`, type: "image/png" };
                     }
                   }
+
                   addExchangeSafe(baseUrl + relPath, fileHeaders, content);
                   if (relPath === "index.html") {
                     addExchangeSafe(baseUrl, fileHeaders, content);
@@ -287,6 +315,7 @@ jobs:
               display: "standalone",
               icons: validIcon ? [validIcon] : []
             };
+
             if (fs.existsSync("static/manifest.json")) {
               try {
                 const existing = JSON.parse(fs.readFileSync("static/manifest.json", "utf8"));
@@ -300,12 +329,15 @@ jobs:
                 };
               } catch (e) {}
             }
+
             addExchangeSafe(
               baseUrl + ".well-known/manifest.webmanifest",
               { ...assetHeaders, "Content-Type": "application/manifest+json" },
               Buffer.from(JSON.stringify(manifest, null, 2))
             );
+
             console.log(`Total files packed into bundle: ${addedUrls.size}`);
+
             const unsignedBundle = builder.createBundle();
             const signer = new IntegrityBlockSigner(
               unsignedBundle,
